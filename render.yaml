@@ -1,0 +1,43 @@
+# Draft Render blueprint. Do not apply until the owner approves deployment.
+# Root directory of the Git repo is ASH-AI-PLATFORM (this folder).
+
+services:
+  - type: web
+    name: ash-ai-platform
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install
+    startCommand: node --experimental-strip-types src/main.ts
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 24.13.0
+      - key: ASH_PLATFORM_HOST
+        value: 0.0.0.0
+      - key: ASH_PLATFORM_SERVE_CHAT
+        value: "1"
+      - key: ASH_PLATFORM_APPLY_MIGRATIONS
+        value: "0"
+      - key: SUPABASE_STORAGE_BUCKET
+        value: ash-private-files
+      - key: ASH_PLATFORM_PUBLIC_ORIGIN
+        sync: false
+      - key: ASH_CHAT_PUBLIC_ORIGIN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ASH_PLATFORM_BOOTSTRAP_KEY
+        sync: false
+      - key: ASH_PLATFORM_INVITE_CODE
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false

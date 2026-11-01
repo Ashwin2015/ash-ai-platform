@@ -1,0 +1,62 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start ASH AI",
+      "type": "shell",
+      "command": "${workspaceFolder}/Start-ASH-AI.bat",
+      "windows": {
+        "command": "${workspaceFolder}\\Start-ASH-AI.bat"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Start ASH AI Platform",
+      "dependsOn": ["ASH AI backend", "ASH Chat frontend"],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "ASH AI backend",
+      "type": "shell",
+      "command": "node --experimental-strip-types src/main.ts",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "ASH AI PLATFORM started"
+        }
+      }
+    },
+    {
+      "label": "ASH Chat frontend",
+      "type": "shell",
+      "command": "node apps/ash-chat/scripts/dev-server.mjs",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "ASH Chat preview"
+        }
+      }
+    }
+  ]
+}

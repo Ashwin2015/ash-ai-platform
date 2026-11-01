@@ -1,0 +1,16 @@
+{
+  "name": "ASH Chat",
+  "short_name": "ASH Chat",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111315",
+  "theme_color": "#111315",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
