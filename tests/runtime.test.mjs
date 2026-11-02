@@ -118,6 +118,40 @@ test("LOCAL ONLY never selects a cloud model and FREE CLOUD never selects a loca
   );
 });
 
+test("AUTO ignores empty leading stream chunks and still uses the model", async () => {
+  const cloudModel = model("cloud", "free");
+  const cloud = provider("cloud", [cloudModel], async function* () {
+    yield "";
+    yield "hello";
+  });
+  const runtime = runtimeFor(cloud);
+  const result = await runtime.prepare("auto", "", "", [{ role: "user", content: "Hi" }]);
+  assert.equal(result.model.id, "free");
+  assert.deepEqual(await Array.fromAsync(result.stream), ["hello"]);
+});
+
+test("AUTO tries at most two models per provider", async () => {
+  const calls = [];
+  const models = [
+    model("gemini", "flash-a", { pricing: "limited_free" }),
+    model("gemini", "flash-b", { pricing: "limited_free" }),
+    model("gemini", "flash-c", { pricing: "limited_free" }),
+    model("groq", "llama", { pricing: "limited_free" }),
+  ];
+  const gemini = provider("gemini", models.filter((item) => item.providerId === "gemini"), async function* (id) {
+    calls.push(id);
+    throw new Error(`gemini ${id} failed`);
+  });
+  const groq = provider("groq", models.filter((item) => item.providerId === "groq"), async function* (id) {
+    calls.push(id);
+    yield "from groq";
+  });
+  const runtime = runtimeFor(gemini, groq);
+  const result = await runtime.prepare("auto", "", "", [{ role: "user", content: "Hi" }]);
+  assert.equal(result.model.id, "llama");
+  assert.deepEqual(calls, ["flash-a", "flash-b", "llama"]);
+});
+
 test("AUTO refuses paid-only models", async () => {
   const paid = model("cloud", "paid", { pricing: "paid" });
   const runtime = runtimeFor(provider("cloud", [paid], async function* () { yield "paid"; }));

@@ -169,6 +169,11 @@ export class PostgresDatabase {
   private async ensureOwnerSchema() {
     await this.pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_owner INTEGER NOT NULL DEFAULT 0");
     try {
+      await this.pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata TEXT");
+    } catch (error) {
+      logSchemaWarning("messages_metadata", error);
+    }
+    try {
       await this.pool.query("CREATE UNIQUE INDEX IF NOT EXISTS users_single_owner ON users (is_owner) WHERE is_owner = 1");
     } catch (error) {
       logSchemaWarning("users_single_owner", error);

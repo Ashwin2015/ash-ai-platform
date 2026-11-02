@@ -21,6 +21,7 @@ export class GeminiProvider implements ModelProvider {
   readonly displayName = "Google Gemini";
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private modelsCache: { expiresAt: number; models: ModelDescriptor[] } | null = null;
 
   constructor(apiKey: string, baseUrl = "https://generativelanguage.googleapis.com/v1beta") {
     this.apiKey = apiKey;
@@ -51,12 +52,13 @@ export class GeminiProvider implements ModelProvider {
 
   async listModels(signal?: AbortSignal): Promise<ModelDescriptor[]> {
     if (!this.apiKey) return [];
+    if (this.modelsCache && this.modelsCache.expiresAt > Date.now()) return this.modelsCache.models;
     const response = await providerFetch(`${this.baseUrl}/models?pageSize=1000`, {
       headers: { "x-goog-api-key": this.apiKey },
       signal,
     }, this.displayName);
     const data = await readJson<GeminiCatalog>(response, this.displayName);
-    return (data.models ?? [])
+    const models = (data.models ?? [])
       .filter((model): model is typeof model & { name: string } =>
         typeof model.name === "string" && model.supportedGenerationMethods?.includes("generateContent") === true,
       )
@@ -86,6 +88,8 @@ export class GeminiProvider implements ModelProvider {
       })
       .filter((model) => model.pricing === "limited_free")
       .sort((left, right) => left.id.localeCompare(right.id));
+    this.modelsCache = { expiresAt: Date.now() + 45_000, models };
+    return models;
   }
 
   async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal): AsyncIterable<string> {

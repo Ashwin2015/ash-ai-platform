@@ -187,6 +187,7 @@ export function createPlatformServer(config: PlatformConfig) {
       "OpenRouter",
       config.openrouterApiKey,
       config.openrouterBaseUrl || "https://openrouter.ai/api/v1",
+      config.publicOrigin || "https://ash-ai-platform.onrender.com",
     ));
   }
   const runtime = new ChatRuntime(providers);
@@ -592,10 +593,8 @@ export function createPlatformServer(config: PlatformConfig) {
           }
 
           const abortController = new AbortController();
-          request.on("aborted", () => abortController.abort());
-          response.on("close", () => {
-            if (!response.writableEnded) abortController.abort();
-          });
+          const onAborted = () => abortController.abort();
+          request.on("aborted", onAborted);
           const attachmentIds = Array.isArray(body.attachmentIds)
             ? body.attachmentIds.filter((value): value is string => typeof value === "string")
             : [];
@@ -622,6 +621,9 @@ export function createPlatformServer(config: PlatformConfig) {
             "X-Accel-Buffering": "no",
           });
           response.flushHeaders();
+          response.on("close", () => {
+            if (!response.writableEnded) abortController.abort();
+          });
           const sendEvent = (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
           sendEvent("message", { type: "user", id: userMessage.id });
           sendEvent("model", { providerId: model.providerId, modelId: model.id, displayName: model.displayName, locality: model.locality, pricing: model.pricing });
@@ -655,9 +657,12 @@ export function createPlatformServer(config: PlatformConfig) {
         response.end();
         return;
       }
-      const payload = errorPayload(error);
+      const mapped = error instanceof Error && error.name === "AbortError"
+        ? new PlatformError("provider_unavailable", "The chat request was interrupted or timed out.", 504)
+        : error;
+      const payload = errorPayload(mapped);
       sendJson(response, payload.status, payload.body);
-      if (!(error instanceof PlatformError)) {
+      if (!(mapped instanceof PlatformError)) {
         console.error(JSON.stringify({
           level: "error",
           requestId,
@@ -669,7 +674,7 @@ export function createPlatformServer(config: PlatformConfig) {
   });
 
   server.requestTimeout = 180_000;
-  server.headersTimeout = 30_000;
+  server.headersTimeout = 180_000;
   server.keepAliveTimeout = 5_000;
   return { server, database, files };
 }

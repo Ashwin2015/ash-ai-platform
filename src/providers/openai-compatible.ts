@@ -24,12 +24,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
   readonly displayName: string;
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly referer: string;
+  private modelsCache: { expiresAt: number; models: ModelDescriptor[] } | null = null;
 
-  constructor(id: "groq" | "openrouter", displayName: string, apiKey: string, baseUrl: string) {
+  constructor(id: "groq" | "openrouter", displayName: string, apiKey: string, baseUrl: string, referer = "") {
     this.id = id;
     this.displayName = displayName;
     this.apiKey = apiKey;
     this.baseUrl = baseUrl;
+    this.referer = referer;
   }
 
   async health(signal?: AbortSignal) {
@@ -61,12 +64,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async listModels(signal?: AbortSignal): Promise<ModelDescriptor[]> {
     if (!this.apiKey) return [];
+    if (this.modelsCache && this.modelsCache.expiresAt > Date.now()) return this.modelsCache.models;
     const response = await providerFetch(`${this.baseUrl}/models`, {
       headers: this.headers(),
       signal,
     }, this.displayName);
     const data = await readJson<Catalog>(response, this.displayName);
-    return (data.data ?? [])
+    const models = (data.data ?? [])
       .filter((model): model is typeof model & { id: string } => typeof model.id === "string" && model.active !== false)
       .filter((model) => this.id === "groq" ? isGroqFreeChatModel(model.id) : isOpenRouterZeroPrice(model))
       .map((model) => ({
@@ -89,6 +93,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
           ? "Catalog reports zero input/output price. Free endpoints may still rate-limit."
           : "Included from Groq's current chat catalogue as a limited free-tier candidate.",
       }));
+    this.modelsCache = { expiresAt: Date.now() + 45_000, models };
+    return models;
   }
 
   async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal): AsyncIterable<string> {
@@ -140,7 +146,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       Authorization: `Bearer ${this.apiKey}`,
     };
     if (this.id === "openrouter") {
-      headers["HTTP-Referer"] = "http://127.0.0.1:3036";
+      headers["HTTP-Referer"] = this.referer || "http://127.0.0.1:3036";
       headers["X-Title"] = "ASH AI Platform";
     }
     return headers;

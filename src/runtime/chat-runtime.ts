@@ -16,6 +16,8 @@ export type PrepareOptions = {
 };
 
 const MODEL_FAILURE_COOLDOWN_MS = 30_000;
+const AUTO_CANDIDATE_LIMIT = 6;
+const AUTO_PER_PROVIDER_LIMIT = 2;
 
 export class ChatRuntime {
   private readonly providers: ProviderRegistry;
@@ -68,17 +70,21 @@ export class ChatRuntime {
       if (!provider) continue;
       try {
         const iterator = provider.streamChat(model.id, messages, signal)[Symbol.asyncIterator]();
-        const first = await iterator.next();
-        if (first.done || !first.value) {
+        const first = await this.firstText(iterator);
+        if (!first) {
           throw new PlatformError("provider_unavailable", "The model returned an empty response.", 502);
         }
         this.failedUntil.delete(this.modelKey(model));
         return {
           model,
-          stream: this.prepend(first.value, iterator),
+          stream: this.prepend(first, iterator),
         };
       } catch (error) {
-        if (signal?.aborted) throw error;
+        if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
+          throw error instanceof PlatformError
+            ? error
+            : new PlatformError("provider_unavailable", "The chat request was interrupted or timed out.", 504);
+        }
         this.failedUntil.set(this.modelKey(model), this.now() + MODEL_FAILURE_COOLDOWN_MS);
         lastFailure = error;
       }
@@ -110,12 +116,33 @@ export class ChatRuntime {
       left.id.localeCompare(right.id),
     );
     if (mode === "local_only") return sorted(eligible.filter((model) => model.locality === "local"));
-    if (mode === "free_cloud") {
-      return sorted(eligible.filter((model) =>
+    const cloudOrAuto = mode === "free_cloud"
+      ? eligible.filter((model) =>
         model.locality === "cloud" && (model.pricing === "free" || model.pricing === "limited_free"),
-      ));
+      )
+      : eligible.filter((model) => model.pricing === "free" || model.pricing === "limited_free");
+    return this.limitAutoCandidates(sorted(cloudOrAuto));
+  }
+
+  private limitAutoCandidates(models: ModelDescriptor[]) {
+    const limited: ModelDescriptor[] = [];
+    const perProvider = new Map<string, number>();
+    for (const model of models) {
+      const used = perProvider.get(model.providerId) || 0;
+      if (used >= AUTO_PER_PROVIDER_LIMIT) continue;
+      perProvider.set(model.providerId, used + 1);
+      limited.push(model);
+      if (limited.length >= AUTO_CANDIDATE_LIMIT) break;
     }
-    return sorted(eligible.filter((model) => model.pricing === "free" || model.pricing === "limited_free"));
+    return limited;
+  }
+
+  private async firstText(iterator: AsyncIterator<string>) {
+    while (true) {
+      const item = await iterator.next();
+      if (item.done) return "";
+      if (item.value) return item.value;
+    }
   }
 
   private assertTextChat(model: ModelDescriptor, options: PrepareOptions) {
