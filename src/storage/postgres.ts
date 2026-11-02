@@ -35,31 +35,87 @@ function toPg(sql: string) {
   return sql.replace(/\?/g, () => `$${++index}`);
 }
 
+function postgresHost(connectionString: string) {
+  try {
+    return new URL(connectionString.replace(/^postgres(ql)?:/i, "http:")).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 function asBuffer(value: unknown) {
   if (Buffer.isBuffer(value)) return value;
   if (value instanceof Uint8Array) return Buffer.from(value);
+  if (ArrayBuffer.isView(value)) {
+    const view = value as ArrayBufferView;
+    return Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+  }
+  if (typeof value === "string") {
+    const hex = value.startsWith("\\x") || value.startsWith("\\\\x")
+      ? value.replace(/^\\+x/i, "")
+      : /^[0-9a-f]+$/i.test(value) && value.length % 2 === 0
+        ? value
+        : "";
+    if (hex) return Buffer.from(hex, "hex");
+  }
   throw new Error("Password material must be binary.");
+}
+
+function pgCode(error: unknown) {
+  return error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
+}
+
+function pgConstraint(error: unknown) {
+  return error && typeof error === "object" && "constraint" in error ? String((error as { constraint: string }).constraint) : "";
+}
+
+function logSchemaWarning(scope: string, error: unknown) {
+  const err = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  console.error(JSON.stringify({
+    level: "error",
+    scope,
+    driverCode: typeof err.code === "string" ? err.code : undefined,
+    message: String(err.message || error).slice(0, 400),
+  }));
 }
 
 export class PostgresDatabase {
   private readonly pool: PgPool;
   private readonly applyMigrations: boolean;
   private readonly migrationsDirectory: string;
+  private readonly skipOwnerSchema: boolean;
   private ready: Promise<void> | null = null;
 
-  constructor(connectionString: string, options: { applyMigrations?: boolean; migrationsDirectory?: string } = {}) {
-    const { Pool } = loadPg();
-    this.pool = new Pool({
-      connectionString,
-      max: 5,
-      ssl: { rejectUnauthorized: true },
-    });
+  constructor(connectionString: string, options: {
+    applyMigrations?: boolean;
+    migrationsDirectory?: string;
+    pool?: PgPool;
+    skipOwnerSchema?: boolean;
+  } = {}) {
+    if (options.pool) {
+      this.pool = options.pool;
+    } else {
+      const { Pool } = loadPg();
+      const host = postgresHost(connectionString);
+      const local = host === "127.0.0.1" || host === "localhost" || host === "::1";
+      this.pool = new Pool({
+        connectionString,
+        max: 5,
+        ssl: local ? false : { rejectUnauthorized: true },
+      });
+    }
     this.applyMigrations = options.applyMigrations === true;
     this.migrationsDirectory = options.migrationsDirectory || path.resolve("supabase", "migrations");
+    this.skipOwnerSchema = options.skipOwnerSchema === true;
   }
 
   private async ensure() {
-    if (!this.ready) this.ready = this.boot();
+    if (!this.ready) {
+      this.ready = this.boot().catch((error) => {
+        this.ready = null;
+        throw error;
+      });
+    }
     await this.ready;
   }
 
@@ -82,7 +138,7 @@ export class PostgresDatabase {
     }
     const tables = names.includes("users");
     if (tables) {
-      await this.ensureOwnerSchema();
+      if (!this.skipOwnerSchema) await this.ensureOwnerSchema();
       if (!this.applyMigrations) return;
     }
     if (!this.applyMigrations) {
@@ -106,12 +162,20 @@ export class PostgresDatabase {
 
   private async ensureOwnerSchema() {
     await this.pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_owner INTEGER NOT NULL DEFAULT 0");
-    await this.pool.query("CREATE UNIQUE INDEX IF NOT EXISTS users_single_owner ON users (is_owner) WHERE is_owner = 1");
-    await this.pool.query(`
-      UPDATE users SET is_owner = 1
-      WHERE id = (SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1)
-        AND NOT EXISTS (SELECT 1 FROM users WHERE is_owner = 1)
-    `);
+    try {
+      await this.pool.query("CREATE UNIQUE INDEX IF NOT EXISTS users_single_owner ON users (is_owner) WHERE is_owner = 1");
+    } catch (error) {
+      logSchemaWarning("users_single_owner", error);
+    }
+    try {
+      await this.pool.query(`
+        UPDATE users SET is_owner = 1
+        WHERE id = (SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1)
+          AND NOT EXISTS (SELECT 1 FROM users WHERE is_owner = 1)
+      `);
+    } catch (error) {
+      logSchemaWarning("promote_existing_owner", error);
+    }
   }
 
   private async transact<T>(work: (query: (sql: string, params?: unknown[]) => Promise<PgResult>) => Promise<T>) {
@@ -144,29 +208,51 @@ export class PostgresDatabase {
     return (await this.run(sql, params)).rows;
   }
 
-  async createUser(user: UserRecord, createdAt: number) {
-    const insert = (isOwner: number) => this.run(
-      "INSERT INTO users (id, email, password_salt, password_hash, created_at, is_owner) VALUES (?, ?, ?, ?, ?, ?)",
-      [user.id, user.email, Buffer.from(user.passwordSalt), Buffer.from(user.passwordHash), createdAt, isOwner],
+  private async insertUser(user: UserRecord, createdAt: number, isOwner?: number) {
+    const salt = Buffer.from(user.passwordSalt);
+    const hash = Buffer.from(user.passwordHash);
+    const ownerSql = isOwner === undefined
+      ? "CASE WHEN EXISTS (SELECT 1 FROM users WHERE is_owner = 1) THEN 0 ELSE 1 END"
+      : "?";
+    const params = isOwner === undefined
+      ? [user.id, user.email, salt, hash, createdAt]
+      : [user.id, user.email, salt, hash, createdAt, isOwner];
+    const result = await this.run(
+      `INSERT INTO users (id, email, password_salt, password_hash, created_at, is_owner)
+       VALUES (?, ?, ?::bytea, ?::bytea, ?::bigint, ${ownerSql})
+       RETURNING is_owner`,
+      params,
     );
+    user.isOwner = Boolean(Number(result.rows[0]?.is_owner));
+  }
+
+  private rethrowUserInsert(error: unknown): never {
+    const constraint = `${pgConstraint(error)} ${error instanceof Error ? error.message : ""}`;
+    if (pgCode(error) === "23505" && /email/i.test(constraint)) throw new Error("UNIQUE constraint failed");
+    throw error;
+  }
+
+  async createUser(user: UserRecord, createdAt: number) {
     try {
-      await insert(1);
-      user.isOwner = true;
+      await this.insertUser(user, createdAt);
     } catch (error) {
-      const constraint = error && typeof error === "object" && "constraint" in error
-        ? String((error as { constraint: string }).constraint)
-        : "";
-      const code = error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
-      if (code === "23505" && constraint.includes("email")) throw new Error("UNIQUE constraint failed");
-      if (code !== "23505") throw error;
-      try {
-        await insert(0);
-        user.isOwner = false;
-      } catch (second) {
-        const secondCode = second && typeof second === "object" && "code" in second ? String((second as { code: string }).code) : "";
-        if (secondCode === "23505") throw new Error("UNIQUE constraint failed");
-        throw second;
+      if (pgCode(error) === "42703") {
+        await this.ensureOwnerSchema();
+        await this.insertUser(user, createdAt);
+        return;
       }
+      if (pgCode(error) === "23505" && /email/i.test(`${pgConstraint(error)} ${error instanceof Error ? error.message : ""}`)) {
+        throw new Error("UNIQUE constraint failed");
+      }
+      if (pgCode(error) === "23505") {
+        try {
+          await this.insertUser(user, createdAt, 0);
+          return;
+        } catch (second) {
+          this.rethrowUserInsert(second);
+        }
+      }
+      throw error;
     }
   }
 

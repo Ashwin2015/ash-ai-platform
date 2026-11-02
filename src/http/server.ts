@@ -15,7 +15,7 @@ import { MemoryService } from "../memory/memory-service.ts";
 import { KnowledgeService } from "../knowledge/knowledge-service.ts";
 import { EmbeddingService } from "../embeddings/local.ts";
 import { processUpload } from "../multimodal/documents.ts";
-import { errorPayload, PlatformError } from "../errors.ts";
+import { errorPayload, PlatformError, sanitizeLogError } from "../errors.ts";
 import { parseMultipart, readRawBody } from "./multipart.ts";
 import { appendCookies, authCookieHeaders, clearAuthCookieHeaders, csrfOk, newCsrfToken, sessionFromRequest } from "./cookies.ts";
 import { tryServeChat } from "./static.ts";
@@ -658,7 +658,12 @@ export function createPlatformServer(config: PlatformConfig) {
       const payload = errorPayload(error);
       sendJson(response, payload.status, payload.body);
       if (!(error instanceof PlatformError)) {
-        console.error(JSON.stringify({ level: "error", requestId, code: "internal_error" }));
+        console.error(JSON.stringify({
+          level: "error",
+          requestId,
+          code: "internal_error",
+          ...sanitizeLogError(error),
+        }));
       }
     });
   });

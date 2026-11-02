@@ -64,7 +64,9 @@ export class AuthService {
     const email = typeof emailInput === "string" ? emailInput.trim().toLowerCase() : "";
     const user = await this.database.findUserByEmail(email);
     const actualHash = scryptSync(password.slice(0, 1024), user?.passwordSalt ?? DUMMY_SALT, PASSWORD_BYTES);
-    if (!user || !timingSafeEqual(actualHash, Buffer.from(user.passwordHash))) {
+    const storedHash = user ? Buffer.from(user.passwordHash) : actualHash;
+    const hashesMatch = user && actualHash.length === storedHash.length && timingSafeEqual(actualHash, storedHash);
+    if (!user || !hashesMatch) {
       throw new PlatformError("unauthorized", "Email or password was not accepted.", 401);
     }
 
