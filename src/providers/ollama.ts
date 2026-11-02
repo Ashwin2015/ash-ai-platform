@@ -1,5 +1,5 @@
 import { PlatformError } from "../errors.ts";
-import type { ChatTurn, ModelDescriptor, ModelProvider } from "./provider.ts";
+import type { ChatTurn, ModelDescriptor, ModelProvider, StreamChatOptions } from "./provider.ts";
 
 type TagsResponse = { models?: Array<{ name?: string; remote_host?: string }> };
 type ShowResponse = { capabilities?: string[]; model_info?: Record<string, unknown> };
@@ -101,7 +101,7 @@ export class OllamaProvider implements ModelProvider {
     }
   }
 
-  async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal): AsyncIterable<string> {
+  async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncIterable<string> {
     const models = await this.listModels(signal);
     const model = models.find((item) => item.id === modelId);
     if (!model) throw new PlatformError("model_unavailable", "That local Ollama model is not installed.", 422);
@@ -125,6 +125,10 @@ export class OllamaProvider implements ModelProvider {
           };
         }),
         stream: true,
+        options: {
+          temperature: options?.temperature ?? 0.6,
+          ...(options?.maxOutputTokens ? { num_predict: options.maxOutputTokens } : {}),
+        },
       }),
       signal,
     }, 180_000);

@@ -25,6 +25,7 @@ export function renderMarkdown(markdown) {
   let list = "";
   let code = null;
   let codeLines = [];
+  let inTable = false;
 
   const flushParagraph = () => {
     if (paragraph.length) output.push(`<p>${paragraph.map(inlineMarkdown).join("<br>")}</p>`);
@@ -34,12 +35,19 @@ export function renderMarkdown(markdown) {
     if (list) output.push(`</${list}>`);
     list = "";
   };
+  const closeTable = () => {
+    if (inTable) {
+      output.push("</tbody></table>");
+      inTable = false;
+    }
+  };
 
   for (const line of lines) {
     const fence = line.match(/^\s*```([a-zA-Z0-9_+-]*)\s*$/);
     if (fence) {
       flushParagraph();
       closeList();
+      closeTable();
       if (code === null) {
         code = fence[1] || "text";
         codeLines = [];
@@ -57,12 +65,14 @@ export function renderMarkdown(markdown) {
     if (!line.trim()) {
       flushParagraph();
       closeList();
+      closeTable();
       continue;
     }
     const heading = line.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
       flushParagraph();
       closeList();
+      closeTable();
       const level = heading[1].length;
       output.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
       continue;
@@ -79,11 +89,29 @@ export function renderMarkdown(markdown) {
       output.push(`<li>${inlineMarkdown(listItem[1])}</li>`);
       continue;
     }
+    const tableRow = line.match(/^\s*\|(.+)\|\s*$/);
+    if (tableRow) {
+      const cells = tableRow[1].split("|").map((cell) => cell.trim());
+      const isDivider = cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+      if (isDivider) continue;
+      flushParagraph();
+      closeList();
+      const header = !inTable;
+      if (!inTable) {
+        output.push("<table><tbody>");
+        inTable = true;
+      }
+      const tag = header ? "th" : "td";
+      output.push(`<tr>${cells.map((cell) => `<${tag}>${inlineMarkdown(cell)}</${tag}>`).join("")}</tr>`);
+      continue;
+    }
+    closeTable();
     closeList();
     paragraph.push(line);
   }
   flushParagraph();
   closeList();
+  closeTable();
   if (code !== null) {
     output.push(`<pre><code class="language-${escapeHtml(code)}">${escapeHtml(codeLines.join("\n"))}</code></pre>`);
   }

@@ -26,6 +26,15 @@ export class ChatState extends EventTarget {
     })();
     this.panel = "chats";
     this.memorySuggestions = [];
+    this.responseStyle = (() => {
+      try {
+        const stored = localStorage.getItem("ash-chat-response-style");
+        return stored === "concise" || stored === "detailed" ? stored : "balanced";
+      } catch { return "balanced"; }
+    })();
+    this.deepReasoning = (() => {
+      try { return localStorage.getItem("ash-chat-deep-reasoning") === "1"; } catch { return false; }
+    })();
   }
 
   update(patch) {

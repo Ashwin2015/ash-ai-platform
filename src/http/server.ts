@@ -578,7 +578,7 @@ export function createPlatformServer(config: PlatformConfig) {
         }
         if (method === "POST" && hasMessagesSuffix) {
           const body = await readJson(request);
-          allowKeys(body, ["content", "mode", "providerId", "modelId", "attachmentIds", "regenerateFromMessageId", "editMessageId", "webSearch"]);
+          allowKeys(body, ["content", "mode", "providerId", "modelId", "attachmentIds", "regenerateFromMessageId", "editMessageId", "webSearch", "responseStyle", "deepReasoning"]);
           if (typeof body.content !== "string") {
             throw new PlatformError("invalid_request", "Message content is required.", 400);
           }
@@ -611,6 +611,8 @@ export function createPlatformServer(config: PlatformConfig) {
               regenerateFromMessageId: typeof body.regenerateFromMessageId === "string" ? body.regenerateFromMessageId : undefined,
               editMessageId: typeof body.editMessageId === "string" ? body.editMessageId : undefined,
               webSearch: body.webSearch === true,
+              responseStyle: body.responseStyle === "concise" || body.responseStyle === "detailed" ? body.responseStyle : "balanced",
+              deepReasoning: body.deepReasoning === true,
             },
           );
           setHeaders(response);
@@ -636,7 +638,7 @@ export function createPlatformServer(config: PlatformConfig) {
               sendEvent("token", { text });
             }
             if (assistantText && !abortController.signal.aborted) {
-              const assistantMessage = await chat.saveAssistantReply(user.id, conversationId, assistantText, { providerId: model.providerId, id: model.id });
+              const assistantMessage = await chat.saveAssistantReply(user.id, conversationId, assistantText, model);
               sendEvent("done", { messageId: assistantMessage.id });
             } else if (!abortController.signal.aborted) {
               sendEvent("error", { code: "provider_unavailable", message: "The model returned an empty response." });

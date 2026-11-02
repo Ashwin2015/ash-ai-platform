@@ -53,6 +53,10 @@ test("markdown renderer supports common syntax while escaping untrusted HTML", (
     "```",
     "",
     "<img src=x onerror=alert(1)>",
+    "",
+    "| A | B |",
+    "| --- | --- |",
+    "| 1 | 2 |",
   ].join("\n"));
   assert.match(html, /<h1>A safe title<\/h1>/);
   assert.match(html, /<strong>bold<\/strong>/);
@@ -63,6 +67,7 @@ test("markdown renderer supports common syntax while escaping untrusted HTML", (
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.doesNotMatch(html, /<img src=x|<script>alert/);
+  assert.match(html, /<table><tbody><tr><th>A<\/th><th>B<\/th><\/tr><tr><td>1<\/td><td>2<\/td><\/tr><\/tbody><\/table>/);
 });
 
 test("login normalizes the Stage 1 session token response", async () => {

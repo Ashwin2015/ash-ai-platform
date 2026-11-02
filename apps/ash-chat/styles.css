@@ -101,6 +101,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .markdown pre { max-width: 100%; overflow-x: auto; margin: 13px 0; padding: 15px 17px; border: 1px solid #303436; border-radius: 10px; background: #0e1011; }
 .markdown pre code { padding: 0; border: 0; background: transparent; color: #d5dad5; font-size: 11px; line-height: 1.7; white-space: pre; }
 .markdown a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.markdown table { width: 100%; margin: 0 0 14px; border-collapse: collapse; font-size: 12px; }
+.markdown th, .markdown td { padding: 7px 9px; border: 1px solid #34383a; text-align: left; vertical-align: top; }
+.markdown th { background: #1a1d1f; color: #eceee9; font-weight: 600; }
+.message-model { margin: 0 0 8px; color: #8b938f; font-size: 10px; letter-spacing: 0.04em; }
+.composer-tools { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 8px 4px 0; color: #9aa19e; font-size: 11px; }
+.composer-tools select { margin-left: 6px; padding: 3px 6px; border: 1px solid #3a3e40; border-radius: 6px; background: #151719; color: #e8eae5; }
 .copy-button { margin-left: auto; padding: 4px 8px; border: 1px solid #353a3b; border-radius: 6px; background: transparent; color: #959b9a; cursor: pointer; font-size: 10px; }
 .copy-button:hover { color: #eee; }
 .thinking { display: flex; align-items: center; gap: 5px; min-height: 25px; }
@@ -204,3 +210,6 @@ html[data-theme="light"] {
 html[data-theme="light"] body, html[data-theme="light"] .app-shell, html[data-theme="light"] .chat-pane, html[data-theme="light"] .topbar { background: #f4f6f4; }
 html[data-theme="light"] .sidebar { background: #eef2ef; }
 html[data-theme="light"] .composer, html[data-theme="light"] .auth-card { background: #fff; color: #1c211f; }
+html[data-theme="light"] .markdown th, html[data-theme="light"] .markdown td { border-color: #d7dbd7; }
+html[data-theme="light"] .markdown th { background: #f3f5f2; color: #1c211f; }
+html[data-theme="light"] .composer-tools select { background: #fff; color: #1c211f; border-color: #d7dbd7; }

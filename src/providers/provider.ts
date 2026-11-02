@@ -31,11 +31,16 @@ export type ChatTurn = {
 
 export type ChatTask = "chat" | "reasoning" | "coding" | "vision" | "document" | "embeddings";
 
+export type StreamChatOptions = {
+  maxOutputTokens?: number;
+  temperature?: number;
+};
+
 export interface ModelProvider {
   readonly id: string;
   readonly displayName: string;
   listModels(signal?: AbortSignal): Promise<ModelDescriptor[]>;
   health?(signal?: AbortSignal): Promise<{ available: boolean; configured: boolean; modelCount: number; message?: string }>;
-  streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal): AsyncIterable<string>;
+  streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncIterable<string>;
   embed?(texts: string[], signal?: AbortSignal): Promise<number[][]>;
 }

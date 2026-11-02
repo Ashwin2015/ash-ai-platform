@@ -28,7 +28,7 @@ function provider(id, models, stream) {
     id,
     displayName: id,
     listModels: async () => models,
-    streamChat: (modelId, messages, signal) => stream(modelId, messages, signal),
+    streamChat: (modelId, messages, signal, options) => stream(modelId, messages, signal, options),
   };
 }
 
@@ -150,6 +150,52 @@ test("AUTO tries at most two models per provider", async () => {
   const result = await runtime.prepare("auto", "", "", [{ role: "user", content: "Hi" }]);
   assert.equal(result.model.id, "llama");
   assert.deepEqual(calls, ["flash-a", "flash-b", "llama"]);
+});
+
+test("manual selection is not overridden by AUTO scoring", async () => {
+  const preferred = model("cloud", "llama");
+  const other = model("cloud", "qwen-coder");
+  const calls = [];
+  const cloud = provider("cloud", [preferred, other], async function* (id) {
+    calls.push(id);
+    yield "manual";
+  });
+  const runtime = runtimeFor(cloud);
+  const result = await runtime.prepare("manual", "cloud", "llama", [{ role: "user", content: "write a typescript function" }], undefined, { task: "coding" });
+  assert.equal(result.model.id, "llama");
+  assert.deepEqual(await Array.fromAsync(result.stream), ["manual"]);
+  assert.deepEqual(calls, ["llama"]);
+});
+
+test("AUTO prefers reasoning-capable models for reasoning tasks", async () => {
+  const chatty = model("cloud", "llama-chat");
+  const reasoner = model("cloud", "deepseek-r1");
+  const cloud = provider("cloud", [chatty, reasoner], async function* (id) { yield id; });
+  const runtime = runtimeFor(cloud);
+  const result = await runtime.prepare("auto", "", "", [{ role: "user", content: "why" }], undefined, { task: "reasoning" });
+  assert.equal(result.model.id, "deepseek-r1");
+});
+
+test("AUTO never selects paid models even when they score higher for the task", async () => {
+  const paidReasoner = model("cloud", "pro-reason", { pricing: "paid" });
+  const freeChat = model("cloud", "llama-chat", { pricing: "limited_free" });
+  const cloud = provider("cloud", [paidReasoner, freeChat], async function* (id) { yield id; });
+  const runtime = runtimeFor(cloud);
+  const result = await runtime.prepare("auto", "", "", [{ role: "user", content: "prove this" }], undefined, { task: "reasoning" });
+  assert.equal(result.model.id, "llama-chat");
+});
+
+test("generation limits are passed through to the selected provider", async () => {
+  let received;
+  const cloud = provider("cloud", [model("cloud", "free")], async function* (_id, _messages, _signal, options) {
+    received = options;
+    yield "ok";
+  });
+  const runtime = runtimeFor(cloud);
+  const result = await runtime.prepare("manual", "cloud", "free", [{ role: "user", content: "Hi" }], undefined, { maxOutputTokens: 8192, temperature: 0.55 });
+  assert.deepEqual(await Array.fromAsync(result.stream), ["ok"]);
+  assert.equal(received.maxOutputTokens, 8192);
+  assert.equal(received.temperature, 0.55);
 });
 
 test("AUTO refuses paid-only models", async () => {

@@ -1,7 +1,7 @@
 import { PlatformError } from "../errors.ts";
 import { classifyGeminiPricing } from "./free-catalog.ts";
 import { providerFetch, readJson, readSseJson } from "./http.ts";
-import type { ChatTurn, ModelDescriptor, ModelProvider } from "./provider.ts";
+import type { ChatTurn, ModelDescriptor, ModelProvider, StreamChatOptions } from "./provider.ts";
 
 type GeminiCatalog = {
   models?: Array<{
@@ -92,7 +92,7 @@ export class GeminiProvider implements ModelProvider {
     return models;
   }
 
-  async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal): AsyncIterable<string> {
+  async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncIterable<string> {
     const allowed = await this.listModels(signal);
     if (!allowed.some((model) => model.id === modelId)) {
       throw new PlatformError("model_unavailable", "That Gemini model is not verified as free-tier for this platform.", 422);
@@ -118,7 +118,10 @@ export class GeminiProvider implements ModelProvider {
         body: JSON.stringify({
           ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
           contents,
-          generationConfig: { temperature: 0.6 },
+          generationConfig: {
+            temperature: options?.temperature ?? 0.6,
+            ...(options?.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+          },
         }),
         signal,
       },

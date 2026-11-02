@@ -42,8 +42,8 @@ export function scoreModelForTask(model: {
   if (model.pricing === "free") score += 20;
   else if (model.pricing === "limited_free") score += 10;
   if (task === "vision" && model.capabilities.imageInput) score += 50;
-  if (task === "coding" && /(code|coder|qwen|deepseek|codellama|devstral)/i.test(model.id)) score += 25;
-  if (task === "reasoning" && /(reason|r1|think|qwq)/i.test(model.id)) score += 20;
+  if (task === "coding" && /(code|coder|qwen|deepseek|codellama|devstral|gpt-oss)/i.test(model.id)) score += 25;
+  if (task === "reasoning" && /(reason|r1|think|qwq|gpt-oss|kimi|flash-thinking)/i.test(model.id)) score += 20;
   if (task === "document" && (model.capabilities.imageInput || /(long|32k|128k)/i.test(model.id))) score += 10;
   return score;
 }

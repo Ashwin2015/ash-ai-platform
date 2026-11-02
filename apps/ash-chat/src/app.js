@@ -184,21 +184,41 @@ function renderMessages() {
   }
   const messages = state.messages.map((message) => renderMessage(message)).join("");
   const streaming = state.sending
-    ? `<article class="message assistant"><div class="message-avatar">A</div><div class="message-body"><div class="message-heading">ASH <span>AI</span></div>${state.streamingText
+    ? `<article class="message assistant"><div class="message-avatar">A</div><div class="message-body"><div class="message-heading">ASH <span>AI</span></div>${state.actualModel ? `<div class="message-model">${escapeHtml(modelLabel(state.actualModel))}</div>` : ""}${state.streamingText
       ? `<div class="markdown">${renderMarkdown(state.streamingText)}</div>`
       : `<div class="thinking"><i></i><i></i><i></i><span>Thinking</span></div>`}</div></article>`
     : "";
   return `<div class="message-list" id="message-list">${messages}${streaming}<div id="messages-end"></div></div>`;
 }
 
+function messageMeta(message) {
+  try { return JSON.parse(message.metadata || "{}"); } catch { return {}; }
+}
+
+function modelLabel(modelLike) {
+  if (!modelLike) return "";
+  const name = modelLike.displayName || modelLike.modelId || modelLike.id || "";
+  const provider = modelLike.providerId || "";
+  const pricing = modelLike.pricing === "limited_free" ? "limited free" : modelLike.pricing || "";
+  return [name, provider, pricing].filter(Boolean).join(" · ");
+}
+
 function renderMessage(message) {
   const assistant = message.role === "assistant";
+  const meta = messageMeta(message);
+  const usedModel = assistant ? modelLabel({
+    displayName: meta.displayName,
+    modelId: meta.modelId,
+    providerId: meta.providerId,
+    pricing: meta.pricing,
+  }) : "";
   return `<article class="message ${assistant ? "assistant" : "user"}">
     <div class="message-avatar">${assistant ? "A" : "Y"}</div>
     <div class="message-body">
       <div class="message-heading">${assistant ? "ASH <span>AI</span>" : "You"}<time>${formatTime(message.createdAt)}</time>
       ${assistant && message.content ? `<button class="copy-button" data-action="copy" data-id="${escapeHtml(message.id)}" type="button">Copy</button>` : ""}
       ${assistant ? `<button class="copy-button" data-action="regenerate" data-id="${escapeHtml(message.id)}" type="button">Regenerate</button>` : `<button class="copy-button" data-action="edit-resend" data-id="${escapeHtml(message.id)}" type="button">Edit</button>`}</div>
+      ${usedModel ? `<div class="message-model">${escapeHtml(usedModel)}</div>` : ""}
       <div class="markdown">${renderMarkdown(message.content)}</div>
     </div>
   </article>`;
@@ -254,7 +274,16 @@ function renderApp() {
               ? `<button class="stop-button" data-action="stop" type="button" aria-label="Stop generation"><span>■</span></button>`
               : `<button class="send-button" type="submit" aria-label="Send message"><span>↑</span></button>`}
           </form>
-          <div class="composer-hint"><span>Enter to send <kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line</span><label><input id="web-search" type="checkbox"> Wikipedia lookup</label></div>
+          <div class="composer-tools">
+            <label>Length <select id="response-style">
+              <option value="concise" ${state.responseStyle === "concise" ? "selected" : ""}>Concise</option>
+              <option value="balanced" ${state.responseStyle === "balanced" ? "selected" : ""}>Balanced</option>
+              <option value="detailed" ${state.responseStyle === "detailed" ? "selected" : ""}>Detailed</option>
+            </select></label>
+            <label><input id="deep-reasoning" type="checkbox" ${state.deepReasoning ? "checked" : ""}> Deep reasoning</label>
+            <label><input id="web-search" type="checkbox"> Wikipedia lookup</label>
+          </div>
+          <div class="composer-hint"><span>Enter to send <kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line</span><span>Deep reasoning adds a short reasoning summary, not hidden chain-of-thought.</span></div>
         </footer>
       </section>
     </main>`;
@@ -286,7 +315,10 @@ function bindAppEvents() {
       if (action === "open-sidebar") { mobileSidebarOpen = true; renderApp(); }
       if (action === "close-sidebar") { mobileSidebarOpen = false; renderApp(); }
       if (action === "copy") void copyMessage(id, element);
-      if (action === "regenerate") void sendMessage(null, { regenerateFromMessageId: id, content: "Regenerate the previous answer." });
+      if (action === "regenerate") {
+        const lastUser = [...state.messages].reverse().find((message) => message.role === "user");
+        void sendMessage(null, { regenerateFromMessageId: id, content: lastUser?.content || ".", skipUserBubble: true });
+      }
       if (action === "edit-resend") void editResend(id);
       if (action === "toggle-theme") state.update({ theme: state.theme === "dark" ? "light" : "dark" });
       if (action === "panel-chats") state.update({ panel: "chats" });
@@ -325,6 +357,16 @@ function bindAppEvents() {
   root.querySelector("#file-input")?.addEventListener("change", (event) => {
     const file = event.currentTarget.files?.[0];
     if (file) void uploadFile(file);
+  });
+  root.querySelector("#response-style")?.addEventListener("change", (event) => {
+    state.responseStyle = event.currentTarget.value === "concise" || event.currentTarget.value === "detailed"
+      ? event.currentTarget.value
+      : "balanced";
+    try { localStorage.setItem("ash-chat-response-style", state.responseStyle); } catch {}
+  });
+  root.querySelector("#deep-reasoning")?.addEventListener("change", (event) => {
+    state.deepReasoning = event.currentTarget.checked;
+    try { localStorage.setItem("ash-chat-deep-reasoning", state.deepReasoning ? "1" : "0"); } catch {}
   });
   root.querySelector("#composer")?.addEventListener("submit", (event) => { void sendMessage(event); });
   const textarea = root.querySelector("#composer textarea");
@@ -529,8 +571,10 @@ async function sendMessage(event, overrides = {}) {
       state.activeConversationId = conversationId;
       state.conversations = [result.conversation, ...state.conversations];
     }
-    temporaryUserMessage = { id: `pending-${Date.now()}`, role: "user", content, createdAt: Date.now() };
-    state.messages = [...state.messages, temporaryUserMessage];
+    if (!overrides.skipUserBubble && !overrides.regenerateFromMessageId) {
+      temporaryUserMessage = { id: `pending-${Date.now()}`, role: "user", content, createdAt: Date.now() };
+      state.messages = [...state.messages, temporaryUserMessage];
+    }
     if (textarea && !overrides.content) { textarea.value = ""; textarea.style.height = "auto"; }
     const attachmentIds = state.pendingAttachments.map((item) => item.id);
     state.pendingAttachments = [];
@@ -546,6 +590,8 @@ async function sendMessage(event, overrides = {}) {
       regenerateFromMessageId: overrides.regenerateFromMessageId,
       editMessageId: overrides.editMessageId,
       webSearch,
+      responseStyle: state.responseStyle,
+      deepReasoning: state.deepReasoning,
     }, {
       signal: controller.signal,
       onToken: (token) => {
@@ -594,7 +640,10 @@ async function sendMessage(event, overrides = {}) {
         state.conversations = state.conversations.filter((item) => item.id !== conversationId);
         state.activeConversationId = "";
       }
-      state.error = error.message || "The response could not be completed.";
+      const code = error.code;
+      state.error = code === "rate_limited"
+        ? `${error.message || "A free-tier limit was reached."} ASH Chat will try another free model on the next send.`
+        : error.message || "The response could not be completed.";
     }
     state.update({});
   }

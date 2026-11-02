@@ -13,11 +13,20 @@ type PreparedChat = {
 export type PrepareOptions = {
   task?: ChatTask;
   requireVision?: boolean;
+  maxOutputTokens?: number;
+  temperature?: number;
 };
 
 const MODEL_FAILURE_COOLDOWN_MS = 30_000;
 const AUTO_CANDIDATE_LIMIT = 6;
 const AUTO_PER_PROVIDER_LIMIT = 2;
+
+function streamOptions(options: PrepareOptions) {
+  return {
+    maxOutputTokens: options.maxOutputTokens,
+    temperature: options.temperature,
+  };
+}
 
 export class ChatRuntime {
   private readonly providers: ProviderRegistry;
@@ -61,7 +70,7 @@ export class ChatRuntime {
       this.assertTextChat(model, options);
       const provider = this.providers.get(model.providerId);
       if (!provider) throw new PlatformError("model_unavailable", "The selected provider is not registered.", 422);
-      return { model, stream: provider.streamChat(model.id, messages, signal) };
+      return { model, stream: provider.streamChat(model.id, messages, signal, streamOptions(options)) };
     }
 
     let lastFailure: unknown;
@@ -69,7 +78,7 @@ export class ChatRuntime {
       const provider = this.providers.get(model.providerId);
       if (!provider) continue;
       try {
-        const iterator = provider.streamChat(model.id, messages, signal)[Symbol.asyncIterator]();
+        const iterator = provider.streamChat(model.id, messages, signal, streamOptions(options))[Symbol.asyncIterator]();
         const first = await this.firstText(iterator);
         if (!first) {
           throw new PlatformError("provider_unavailable", "The model returned an empty response.", 502);
