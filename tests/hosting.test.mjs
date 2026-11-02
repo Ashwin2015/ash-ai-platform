@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { postgresPoolSsl } from "../src/storage/postgres.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -36,4 +37,13 @@ test("postgres migration SQL matches local schema tables and is additive", () =>
   assert.match(owner, /users_single_owner/);
   assert.doesNotMatch(owner, /DROP TABLE/i);
   assert.doesNotMatch(owner, /TRUNCATE/i);
+});
+
+test("hosted Postgres TLS encrypts without rejecting the Supabase certificate chain", () => {
+  assert.equal(postgresPoolSsl("postgres://u:p@127.0.0.1:5432/postgres"), false);
+  assert.equal(postgresPoolSsl("postgresql://u:p@localhost:5432/postgres"), false);
+  assert.deepEqual(
+    postgresPoolSsl("postgresql://u:p@aws-0-eu-central-1.pooler.supabase.com:6543/postgres"),
+    { rejectUnauthorized: false },
+  );
 });

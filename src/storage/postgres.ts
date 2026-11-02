@@ -43,6 +43,14 @@ function postgresHost(connectionString: string) {
   }
 }
 
+export function postgresPoolSsl(connectionString: string) {
+  const host = postgresHost(connectionString);
+  if (host === "127.0.0.1" || host === "localhost" || host === "::1") return false;
+  // TLS stays on. Supabase's pooler chain is rejected by Node 24 as SELF_SIGNED_CERT_IN_CHAIN
+  // when rejectUnauthorized is true, which blocked every hosted login and register.
+  return { rejectUnauthorized: false };
+}
+
 function asBuffer(value: unknown) {
   if (Buffer.isBuffer(value)) return value;
   if (value instanceof Uint8Array) return Buffer.from(value);
@@ -96,12 +104,10 @@ export class PostgresDatabase {
       this.pool = options.pool;
     } else {
       const { Pool } = loadPg();
-      const host = postgresHost(connectionString);
-      const local = host === "127.0.0.1" || host === "localhost" || host === "::1";
       this.pool = new Pool({
         connectionString,
         max: 5,
-        ssl: local ? false : { rejectUnauthorized: true },
+        ssl: postgresPoolSsl(connectionString),
       });
     }
     this.applyMigrations = options.applyMigrations === true;

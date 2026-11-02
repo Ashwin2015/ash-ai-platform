@@ -55,7 +55,8 @@ if (!/^postgres(ql)?:\/\//i.test(databaseUrl)) {
 }
 
 const { Pool } = createRequire(import.meta.url)("pg");
-const pool = new Pool({ connectionString: databaseUrl, ssl: { rejectUnauthorized: true }, max: 1 });
+const { postgresPoolSsl } = await import("../src/storage/postgres.ts");
+const pool = new Pool({ connectionString: databaseUrl, ssl: postgresPoolSsl(databaseUrl), max: 1 });
 
 try {
   const existing = await pool.query(`
