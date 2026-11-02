@@ -2,7 +2,13 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export type UserRecord = { id: string; email: string; passwordSalt: Uint8Array; passwordHash: Uint8Array };
+export type UserRecord = {
+  id: string;
+  email: string;
+  passwordSalt: Uint8Array;
+  passwordHash: Uint8Array;
+  isOwner?: boolean;
+};
 export type ConversationRecord = {
   id: string;
   title: string;
@@ -90,7 +96,7 @@ export class PlatformDatabase {
 
   private migrate() {
     const version = this.database.prepare("PRAGMA user_version").get() as { user_version: number };
-    if (version.user_version > 3) throw new Error("The platform database schema is newer than this application.");
+    if (version.user_version > 4) throw new Error("The platform database schema is newer than this application.");
     if (version.user_version < 1) {
       this.database.exec(`
         BEGIN;
@@ -213,24 +219,56 @@ export class PlatformDatabase {
         COMMIT;
       `);
     }
+    const afterAuth = this.database.prepare("PRAGMA user_version").get() as { user_version: number };
+    if (afterAuth.user_version === 3) {
+      this.database.exec(`
+        BEGIN;
+        ALTER TABLE users ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0;
+        CREATE UNIQUE INDEX users_single_owner ON users(is_owner) WHERE is_owner = 1;
+        UPDATE users SET is_owner = 1
+          WHERE id = (SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1)
+            AND NOT EXISTS (SELECT 1 FROM users WHERE is_owner = 1);
+        PRAGMA user_version = 4;
+        COMMIT;
+      `);
+    }
   }
 
   createUser(user: UserRecord, createdAt: number) {
-    this.database.prepare(
-      "INSERT INTO users (id, email, password_salt, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
-    ).run(user.id, user.email, user.passwordSalt, user.passwordHash, createdAt);
+    const insert = (isOwner: number) => this.database.prepare(
+      "INSERT INTO users (id, email, password_salt, password_hash, created_at, is_owner) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(user.id, user.email, user.passwordSalt, user.passwordHash, createdAt, isOwner);
+    try {
+      insert(1);
+      user.isOwner = true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message.includes("UNIQUE constraint failed") && message.includes("users.email")) throw error;
+      try {
+        insert(0);
+        user.isOwner = false;
+      } catch (second) {
+        throw second;
+      }
+    }
   }
 
   findUserByEmail(email: string): UserRecord | null {
     const row = this.database.prepare(
-      "SELECT id, email, password_salt, password_hash FROM users WHERE email = ?",
-    ).get(email) as UserRow | undefined;
-    return row ? { id: row.id, email: row.email, passwordSalt: row.password_salt, passwordHash: row.password_hash } : null;
+      "SELECT id, email, password_salt, password_hash, is_owner FROM users WHERE email = ?",
+    ).get(email) as (UserRow & { is_owner?: number }) | undefined;
+    return row ? {
+      id: row.id,
+      email: row.email,
+      passwordSalt: row.password_salt,
+      passwordHash: row.password_hash,
+      isOwner: Boolean(row.is_owner),
+    } : null;
   }
 
   findUserById(id: string) {
-    const row = this.database.prepare("SELECT id, email FROM users WHERE id = ?").get(id) as { id: string; email: string } | undefined;
-    return row ?? null;
+    const row = this.database.prepare("SELECT id, email, is_owner FROM users WHERE id = ?").get(id) as { id: string; email: string; is_owner?: number } | undefined;
+    return row ? { id: row.id, email: row.email, isOwner: Boolean(row.is_owner) } : null;
   }
 
   deleteUser(userId: string) {
@@ -249,14 +287,14 @@ export class PlatformDatabase {
 
   findSession(tokenHash: string, now: number) {
     const row = this.database.prepare(
-      "SELECT users.id, users.email, sessions.expires_at FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ?",
-    ).get(tokenHash) as { id: string; email: string; expires_at: number } | undefined;
+      "SELECT users.id, users.email, users.is_owner, sessions.expires_at FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ?",
+    ).get(tokenHash) as { id: string; email: string; is_owner?: number; expires_at: number } | undefined;
     if (!row) return null;
     if (row.expires_at <= now) {
       this.deleteSession(tokenHash);
       return null;
     }
-    return { id: row.id, email: row.email, expiresAt: row.expires_at };
+    return { id: row.id, email: row.email, isOwner: Boolean(row.is_owner), expiresAt: row.expires_at };
   }
 
   deleteSession(tokenHash: string) {

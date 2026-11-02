@@ -17,8 +17,10 @@ CREATE TABLE IF NOT EXISTS users (
   -- Invite-gated private test: no verification email is sent. This flag is not an SMTP proof.
   email_verified INTEGER NOT NULL DEFAULT 1,
   reset_token_hash TEXT,
-  reset_expires BIGINT
+  reset_expires BIGINT,
+  is_owner INTEGER NOT NULL DEFAULT 0
 );
+CREATE UNIQUE INDEX IF NOT EXISTS users_single_owner ON users (is_owner) WHERE is_owner = 1;
 
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,

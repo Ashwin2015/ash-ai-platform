@@ -153,46 +153,59 @@ test("versioned API authenticates users, streams Ollama chat, and isolates conve
   });
   assert.equal(hostileOrigin.response.status, 403);
 
-  const rejectedRegistration = await jsonRequest(apiUrl, "/api/v1/auth/register", {
+  const extraFieldRejected = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
-    body: { bootstrapKey: "wrong", email: "one@example.test", password: "correct-horse-battery" },
+    body: { inviteCode: "ignored", email: "one@example.test", password: "correct-horse-battery" },
   });
-  assert.equal(rejectedRegistration.response.status, 403);
+  assert.equal(extraFieldRejected.response.status, 400);
 
   const first = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
     body: {
-      bootstrapKey: config.bootstrapKey,
       email: "One@Example.test",
       password: "correct-horse-battery",
     },
   });
   assert.equal(first.response.status, 201);
   assert.equal(first.data.user.email, "one@example.test");
+  assert.equal(first.data.user.isOwner, true);
   assert.equal(typeof first.data.accessToken, "string");
 
   const second = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
     body: {
-      bootstrapKey: config.bootstrapKey,
       email: "two@example.test",
       password: "another-strong-password",
     },
   });
   assert.equal(second.response.status, 201);
+  assert.equal(second.data.user.isOwner, false);
 
-  const invited = await jsonRequest(apiUrl, "/api/v1/auth/register", {
+  const third = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
     body: {
-      inviteCode: config.inviteCode,
       email: "three@example.test",
       password: "invite-access-password",
     },
   });
-  assert.equal(invited.response.status, 201);
-  const me = await jsonRequest(apiUrl, "/api/v1/auth/me", { token: invited.data.accessToken });
+  assert.equal(third.response.status, 201);
+  assert.equal(third.data.user.isOwner, false);
+  const me = await jsonRequest(apiUrl, "/api/v1/auth/me", { token: third.data.accessToken });
   assert.equal(me.response.status, 200);
   assert.equal(me.data.user.email, "three@example.test");
+  assert.equal(me.data.user.isOwner, false);
+
+  const duplicate = await jsonRequest(apiUrl, "/api/v1/auth/register", {
+    method: "POST",
+    body: { email: "one@example.test", password: "correct-horse-battery" },
+  });
+  assert.equal(duplicate.response.status, 409);
+
+  const invalidLogin = await jsonRequest(apiUrl, "/api/v1/auth/login", {
+    method: "POST",
+    body: { email: "one@example.test", password: "wrong-password-here" },
+  });
+  assert.equal(invalidLogin.response.status, 401);
 
   const cookieParts = (first.response.headers.getSetCookie?.() || []).map((item) => item.split(";")[0]);
   const cookieHeader = cookieParts.join("; ");
@@ -265,6 +278,16 @@ test("versioned API authenticates users, streams Ollama chat, and isolates conve
   assert.equal(logout.response.status, 200);
   const revokedToken = await jsonRequest(apiUrl, "/api/v1/models", { token: first.data.accessToken });
   assert.equal(revokedToken.response.status, 401);
+
+  const loginAgain = await jsonRequest(apiUrl, "/api/v1/auth/login", {
+    method: "POST",
+    body: { email: "one@example.test", password: "correct-horse-battery" },
+  });
+  assert.equal(loginAgain.response.status, 200);
+  assert.equal(loginAgain.data.user.isOwner, true);
+  const afterLogin = await jsonRequest(apiUrl, "/api/v1/auth/me", { token: loginAgain.data.accessToken });
+  assert.equal(afterLogin.response.status, 200);
+  assert.equal(afterLogin.data.user.email, "one@example.test");
 });
 
 async function readRequestJson(request) {

@@ -20,6 +20,7 @@ const FILES = [
   "20261101_001_init.sql",
   "20261101_002_rls.sql",
   "20261101_003_storage.sql",
+  "20261102_004_owner.sql",
 ];
 
 function loadEnvFile(filePath) {

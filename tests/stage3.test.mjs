@@ -78,11 +78,11 @@ test("projects, memory, search, rename, and account isolation [mock providers]",
 
   const first = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
-    body: { bootstrapKey: "stage3-bootstrap-key-please", email: "one@example.test", password: "correct-horse-battery" },
+    body: { email: "one@example.test", password: "correct-horse-battery" },
   });
   const second = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
-    body: { bootstrapKey: "stage3-bootstrap-key-please", email: "two@example.test", password: "another-strong-password" },
+    body: { email: "two@example.test", password: "another-strong-password" },
   });
   const token = first.data.accessToken;
   const other = second.data.accessToken;

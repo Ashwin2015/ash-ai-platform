@@ -9,44 +9,30 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function secureStringEqual(left: string, right: string) {
-  const leftBytes = Buffer.from(left);
-  const rightBytes = Buffer.from(right);
-  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
-}
+export type AuthenticatedUser = { id: string; email: string; isOwner: boolean };
 
-export type AuthenticatedUser = { id: string; email: string };
+function publicUser(user: { id: string; email: string; isOwner?: boolean }) {
+  return { id: user.id, email: user.email, isOwner: Boolean(user.isOwner) };
+}
 
 export class AuthService {
   private readonly database: PlatformDatabase;
-  private readonly bootstrapKey: string;
-  private readonly inviteCode: string;
   private readonly sessionTtlSeconds: number;
   private readonly now: () => number;
 
   constructor(
     database: PlatformDatabase,
-    bootstrapKey: string,
+    _bootstrapKey: string,
     sessionTtlSeconds: number,
     now: () => number = Date.now,
-    inviteCode = "",
+    _inviteCode = "",
   ) {
     this.database = database;
-    this.bootstrapKey = bootstrapKey;
-    this.inviteCode = inviteCode;
     this.sessionTtlSeconds = sessionTtlSeconds;
     this.now = now;
   }
 
-  private accessAllowed(provided: string) {
-    const candidates = [this.inviteCode, this.bootstrapKey].filter(Boolean);
-    return candidates.some((expected) => provided && secureStringEqual(provided, expected));
-  }
-
-  async register(bootstrapKey: string, emailInput: string, password: string, inviteCode = "") {
-    if (!this.accessAllowed(inviteCode) && !this.accessAllowed(bootstrapKey)) {
-      throw new PlatformError("forbidden", "Account registration is not authorized.", 403);
-    }
+  async register(emailInput: string, password: string) {
     if (typeof emailInput !== "string" || emailInput.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailInput)) {
       throw new PlatformError("invalid_request", "Enter a valid email address.", 400);
     }
@@ -60,6 +46,7 @@ export class AuthService {
       email: emailInput.trim().toLowerCase(),
       passwordSalt: salt,
       passwordHash: scryptSync(password, salt, PASSWORD_BYTES),
+      isOwner: false,
     };
     try {
       await this.database.createUser(user, this.now());
@@ -70,7 +57,7 @@ export class AuthService {
       }
       throw error;
     }
-    return { id: user.id, email: user.email };
+    return publicUser(user);
   }
 
   async login(emailInput: string, password: string) {
@@ -84,7 +71,7 @@ export class AuthService {
     const token = randomBytes(32).toString("base64url");
     const now = this.now();
     await this.database.createSession(hashToken(token), user.id, now + this.sessionTtlSeconds * 1000, now);
-    return { token, expiresAt: now + this.sessionTtlSeconds * 1000, user: { id: user.id, email: user.email } };
+    return { token, expiresAt: now + this.sessionTtlSeconds * 1000, user: publicUser(user) };
   }
 
   async authenticate(authorization: string | undefined, cookieToken = ""): Promise<AuthenticatedUser> {
@@ -93,7 +80,7 @@ export class AuthService {
     if (!token) throw new PlatformError("unauthorized", "A valid bearer access token is required.", 401);
     const session = await this.database.findSession(hashToken(token), this.now());
     if (!session) throw new PlatformError("unauthorized", "The access token is invalid or expired.", 401);
-    return { id: session.id, email: session.email };
+    return { id: session.id, email: session.email, isOwner: Boolean(session.isOwner) };
   }
 
   async revoke(authorization: string | undefined, cookieToken = "") {

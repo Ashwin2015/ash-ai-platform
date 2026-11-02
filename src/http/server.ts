@@ -23,7 +23,7 @@ import { searchWikipedia } from "../research/wikipedia.ts";
 
 const JSON_LIMIT = 64 * 1024;
 const AUTH_RATE_WINDOW_MS = 60_000;
-const AUTH_RATE_LIMIT = 10;
+const AUTH_RATE_LIMIT = 30;
 
 type JsonObject = Record<string, unknown>;
 
@@ -275,16 +275,11 @@ export function createPlatformServer(config: PlatformConfig) {
 
       if (method === "POST" && pathname === "/api/v1/auth/register") {
         const body = await readJson(request);
-        allowKeys(body, ["bootstrapKey", "email", "password", "inviteCode"]);
+        allowKeys(body, ["email", "password"]);
         if (typeof body.email !== "string" || typeof body.password !== "string") {
           throw new PlatformError("invalid_request", "email and password are required.", 400);
         }
-        const user = await auth.register(
-          typeof body.bootstrapKey === "string" ? body.bootstrapKey : "",
-          body.email,
-          body.password,
-          typeof body.inviteCode === "string" ? body.inviteCode : "",
-        );
+        const user = await auth.register(body.email, body.password);
         const login = await auth.login(body.email, body.password);
         const csrf = newCsrfToken();
         appendCookies(response, authCookieHeaders(login.token, csrf, requestIsSecure(request, config), sessionSeconds));

@@ -14,6 +14,8 @@ test("postgres migration SQL matches local schema tables and is additive", () =>
   ]) {
     assert.match(init, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
   }
+  assert.match(init, /is_owner INTEGER NOT NULL DEFAULT 0/);
+  assert.match(init, /users_single_owner/);
   assert.match(init, /password_salt BYTEA/);
   assert.match(init, /email_verified/);
   assert.match(init, /FOREIGN KEY \(user_id, project_id\)/);
@@ -29,4 +31,9 @@ test("postgres migration SQL matches local schema tables and is additive", () =>
   assert.match(storage, /ash-private-files/);
   assert.match(storage, /AS RESTRICTIVE/);
   assert.match(storage, /VALUES \('ash-private-files'/);
+  const owner = readFileSync(path.join(root, "supabase", "migrations", "20261102_004_owner.sql"), "utf8");
+  assert.match(owner, /ADD COLUMN IF NOT EXISTS is_owner/);
+  assert.match(owner, /users_single_owner/);
+  assert.doesNotMatch(owner, /DROP TABLE/i);
+  assert.doesNotMatch(owner, /TRUNCATE/i);
 });

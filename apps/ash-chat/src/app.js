@@ -49,16 +49,12 @@ function renderLogin() {
     <main class="auth-shell">
       <section class="auth-card" aria-labelledby="auth-title">
         <div class="brand-lockup"><span class="brand-mark">A</span><span>ASH <b>CHAT</b></span></div>
-        <p class="eyebrow">PRIVATE BY DESIGN</p>
+        <p class="eyebrow">ASH AI</p>
         <h1 id="auth-title">${authMode === "login" ? "Welcome back." : "Create your account."}</h1>
         <p class="auth-copy">${authMode === "login"
           ? "Sign in with the same email on this computer and your phone."
-          : "Use the private access code from the owner. It is not saved in this browser."}</p>
+          : "Register with your email and a password of at least 12 characters."}</p>
         <form id="auth-form" class="auth-form">
-          ${authMode === "register" ? `
-            <label for="invite-code">Private access code</label>
-            <input id="invite-code" name="inviteCode" type="password" autocomplete="off" required>
-          ` : ""}
           <label for="email">Email</label>
           <input id="email" name="email" type="email" autocomplete="username" maxlength="254" required>
           <label for="password">Password</label>
@@ -67,7 +63,7 @@ function renderLogin() {
           <p class="form-error" id="auth-error" role="alert" hidden></p>
         </form>
         <button class="text-button auth-switch" id="auth-switch" type="button">${authMode === "login" ? "New here? Create an account" : "Already have an account? Sign in"}</button>
-        <div class="privacy-note"><span class="status-dot online"></span> Local platform · provider keys stay on the server</div>
+        <div class="privacy-note"><span class="status-dot online"></span> Provider keys stay on the server</div>
       </section>
     </main>`;
   root.querySelector("#auth-switch").addEventListener("click", () => {
@@ -91,7 +87,7 @@ async function submitAuth(event) {
   try {
     const result = authMode === "login"
       ? await api.login(String(data.get("email")), String(data.get("password")))
-      : await api.register(String(data.get("inviteCode")), String(data.get("email")), String(data.get("password")));
+      : await api.register(String(data.get("email")), String(data.get("password")));
     saveSessionToken(result.accessToken, result.csrfToken);
     state.user = result.user;
     state.error = "";

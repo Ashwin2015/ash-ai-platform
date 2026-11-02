@@ -4,7 +4,7 @@
 
 1. Double-click `Start-ASH-AI.bat`.
 2. A browser window opens at http://127.0.0.1:3035
-3. Create an account with your email, a long password, and the **private access code** from `.env.local` (`ASH_PLATFORM_INVITE_CODE`, or the bootstrap key if they are the same).
+3. Create an account with your email and a password of at least 12 characters. The first account on a new database is the owner. Later signups are ordinary users.
 4. Sign in. Chat, projects, files and memory stay on this computer.
 
 You do not need to start two terminals.

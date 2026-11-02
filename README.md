@@ -17,7 +17,7 @@ That starts ASH AI on `http://127.0.0.1:3035` (API and chat in one process). Clo
 
 ## Configure
 
-Copy `.env.example` to `.env.local` (the start script can do this). Set `ASH_PLATFORM_INVITE_CODE` (private tester access) and keep `ASH_PLATFORM_BOOTSTRAP_KEY`. Optional free-tier cloud keys:
+Copy `.env.example` to `.env.local` (the start script can do this). Register with email and a password of at least 12 characters. The first account becomes the platform owner. Optional free-tier cloud keys:
 
 ```
 GEMINI_API_KEY=

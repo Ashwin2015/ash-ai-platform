@@ -81,7 +81,10 @@ export class PostgresDatabase {
       );
     }
     const tables = names.includes("users");
-    if (tables && !this.applyMigrations) return;
+    if (tables) {
+      await this.ensureOwnerSchema();
+      if (!this.applyMigrations) return;
+    }
     if (!this.applyMigrations) {
       throw new PlatformError(
         "provider_unavailable",
@@ -92,11 +95,23 @@ export class PostgresDatabase {
     const files = [
       "20261101_001_init.sql",
       "20261101_002_rls.sql",
+      "20261102_004_owner.sql",
     ];
     for (const file of files) {
       const sql = readFileSync(path.join(this.migrationsDirectory, file), "utf8");
       await this.pool.query(sql);
     }
+    await this.ensureOwnerSchema();
+  }
+
+  private async ensureOwnerSchema() {
+    await this.pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_owner INTEGER NOT NULL DEFAULT 0");
+    await this.pool.query("CREATE UNIQUE INDEX IF NOT EXISTS users_single_owner ON users (is_owner) WHERE is_owner = 1");
+    await this.pool.query(`
+      UPDATE users SET is_owner = 1
+      WHERE id = (SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1)
+        AND NOT EXISTS (SELECT 1 FROM users WHERE is_owner = 1)
+    `);
   }
 
   private async transact<T>(work: (query: (sql: string, params?: unknown[]) => Promise<PgResult>) => Promise<T>) {
@@ -130,31 +145,45 @@ export class PostgresDatabase {
   }
 
   async createUser(user: UserRecord, createdAt: number) {
+    const insert = (isOwner: number) => this.run(
+      "INSERT INTO users (id, email, password_salt, password_hash, created_at, is_owner) VALUES (?, ?, ?, ?, ?, ?)",
+      [user.id, user.email, Buffer.from(user.passwordSalt), Buffer.from(user.passwordHash), createdAt, isOwner],
+    );
     try {
-      await this.run(
-        "INSERT INTO users (id, email, password_salt, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
-        [user.id, user.email, Buffer.from(user.passwordSalt), Buffer.from(user.passwordHash), createdAt],
-      );
+      await insert(1);
+      user.isOwner = true;
     } catch (error) {
+      const constraint = error && typeof error === "object" && "constraint" in error
+        ? String((error as { constraint: string }).constraint)
+        : "";
       const code = error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
-      if (code === "23505") throw new Error("UNIQUE constraint failed");
-      throw error;
+      if (code === "23505" && constraint.includes("email")) throw new Error("UNIQUE constraint failed");
+      if (code !== "23505") throw error;
+      try {
+        await insert(0);
+        user.isOwner = false;
+      } catch (second) {
+        const secondCode = second && typeof second === "object" && "code" in second ? String((second as { code: string }).code) : "";
+        if (secondCode === "23505") throw new Error("UNIQUE constraint failed");
+        throw second;
+      }
     }
   }
 
   async findUserByEmail(email: string): Promise<UserRecord | null> {
-    const row = await this.one("SELECT id, email, password_salt, password_hash FROM users WHERE email = ?", [email]);
+    const row = await this.one("SELECT id, email, password_salt, password_hash, is_owner FROM users WHERE email = ?", [email]);
     return row ? {
       id: String(row.id),
       email: String(row.email),
       passwordSalt: asBuffer(row.password_salt),
       passwordHash: asBuffer(row.password_hash),
+      isOwner: Boolean(row.is_owner),
     } : null;
   }
 
   async findUserById(id: string) {
-    const row = await this.one("SELECT id, email FROM users WHERE id = ?", [id]);
-    return row ? { id: String(row.id), email: String(row.email) } : null;
+    const row = await this.one("SELECT id, email, is_owner FROM users WHERE id = ?", [id]);
+    return row ? { id: String(row.id), email: String(row.email), isOwner: Boolean(row.is_owner) } : null;
   }
 
   async deleteUser(userId: string) {
@@ -174,7 +203,7 @@ export class PostgresDatabase {
 
   async findSession(tokenHash: string, now: number) {
     const row = await this.one(
-      "SELECT users.id, users.email, sessions.expires_at FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ?",
+      "SELECT users.id, users.email, users.is_owner, sessions.expires_at FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ?",
       [tokenHash],
     );
     if (!row) return null;
@@ -182,7 +211,7 @@ export class PostgresDatabase {
       await this.deleteSession(tokenHash);
       return null;
     }
-    return { id: String(row.id), email: String(row.email), expiresAt: Number(row.expires_at) };
+    return { id: String(row.id), email: String(row.email), isOwner: Boolean(row.is_owner), expiresAt: Number(row.expires_at) };
   }
 
   async deleteSession(tokenHash: string) {

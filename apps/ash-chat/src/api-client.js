@@ -53,8 +53,16 @@ async function request(path, { method = "GET", body, signal, headers: extraHeade
 
 export const api = {
   health: () => request("/health"),
-  register: (inviteCode, email, password) =>
-    request("/auth/register", { method: "POST", body: { inviteCode, email, password } }),
+  register: async (email, password) => {
+    const result = await request("/auth/register", { method: "POST", body: { email, password } });
+    const accessToken = typeof result?.accessToken === "string"
+      ? result.accessToken
+      : typeof result?.token === "string"
+        ? result.token
+        : "";
+    if (!accessToken) throw new Error("The platform did not return a valid session token.");
+    return { ...result, accessToken };
+  },
   login: async (email, password) => {
     const result = await request("/auth/login", { method: "POST", body: { email, password } });
     const accessToken = typeof result?.accessToken === "string"

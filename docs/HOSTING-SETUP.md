@@ -38,8 +38,8 @@ Set as secrets:
 - `ASH_PLATFORM_PUBLIC_ORIGIN`
 - `DATABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `ASH_PLATFORM_BOOTSTRAP_KEY`
-- `ASH_PLATFORM_INVITE_CODE`
+- `ASH_PLATFORM_BOOTSTRAP_KEY` (unused by registration; safe to leave set)
+- `ASH_PLATFORM_INVITE_CODE` (unused by registration; safe to leave set)
 - `GEMINI_API_KEY`
 - `GROQ_API_KEY`
 - `OPENROUTER_API_KEY`
