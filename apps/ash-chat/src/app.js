@@ -217,8 +217,11 @@ function renderMessage(message) {
     <div class="message-body">
       <div class="message-heading">${assistant ? "ASH <span>AI</span>" : "You"}<time>${formatTime(message.createdAt)}</time>
       ${assistant && message.content ? `<button class="copy-button" data-action="copy" data-id="${escapeHtml(message.id)}" type="button">Copy</button>` : ""}
-      ${assistant ? `<button class="copy-button" data-action="regenerate" data-id="${escapeHtml(message.id)}" type="button">Regenerate</button>` : `<button class="copy-button" data-action="edit-resend" data-id="${escapeHtml(message.id)}" type="button">Edit</button>`}</div>
+      ${assistant ? `<button class="copy-button" data-action="regenerate" data-id="${escapeHtml(message.id)}" type="button">Regenerate</button>` : `<button class="copy-button" data-action="edit-resend" data-id="${escapeHtml(message.id)}" type="button">Edit</button>`}
+      ${assistant && meta.truncated && !meta.filtered ? `<button class="copy-button" data-action="continue" data-id="${escapeHtml(message.id)}" type="button">Continue</button>` : ""}</div>
       ${usedModel ? `<div class="message-model">${escapeHtml(usedModel)}</div>` : ""}
+      ${assistant && meta.filtered ? `<div class="incomplete-note">This reply was stopped by the model's safety filter. It is not continued automatically.</div>` : ""}
+      ${assistant && meta.truncated && !meta.filtered ? `<div class="incomplete-note">This reply stopped before it finished. Use Continue to complete it without repeating earlier sections.</div>` : ""}
       <div class="markdown">${renderMarkdown(message.content)}</div>
     </div>
   </article>`;
@@ -276,9 +279,10 @@ function renderApp() {
           </form>
           <div class="composer-tools">
             <label>Length <select id="response-style">
-              <option value="concise" ${state.responseStyle === "concise" ? "selected" : ""}>Concise</option>
-              <option value="balanced" ${state.responseStyle === "balanced" ? "selected" : ""}>Balanced</option>
+              <option value="short" ${state.responseStyle === "short" ? "selected" : ""}>Short</option>
+              <option value="normal" ${state.responseStyle === "normal" ? "selected" : ""}>Normal</option>
               <option value="detailed" ${state.responseStyle === "detailed" ? "selected" : ""}>Detailed</option>
+              <option value="deep_analysis" ${state.responseStyle === "deep_analysis" ? "selected" : ""}>Deep analysis</option>
             </select></label>
             <label><input id="deep-reasoning" type="checkbox" ${state.deepReasoning ? "checked" : ""}> Deep reasoning</label>
             <label><input id="web-search" type="checkbox"> Wikipedia lookup</label>
@@ -318,6 +322,9 @@ function bindAppEvents() {
       if (action === "regenerate") {
         const lastUser = [...state.messages].reverse().find((message) => message.role === "user");
         void sendMessage(null, { regenerateFromMessageId: id, content: lastUser?.content || ".", skipUserBubble: true });
+      }
+      if (action === "continue") {
+        void sendMessage(null, { continueFromMessageId: id, content: "Continue.", skipUserBubble: true });
       }
       if (action === "edit-resend") void editResend(id);
       if (action === "toggle-theme") state.update({ theme: state.theme === "dark" ? "light" : "dark" });
@@ -359,9 +366,8 @@ function bindAppEvents() {
     if (file) void uploadFile(file);
   });
   root.querySelector("#response-style")?.addEventListener("change", (event) => {
-    state.responseStyle = event.currentTarget.value === "concise" || event.currentTarget.value === "detailed"
-      ? event.currentTarget.value
-      : "balanced";
+    const value = event.currentTarget.value;
+    state.responseStyle = value === "short" || value === "detailed" || value === "deep_analysis" ? value : "normal";
     try { localStorage.setItem("ash-chat-response-style", state.responseStyle); } catch {}
   });
   root.querySelector("#deep-reasoning")?.addEventListener("change", (event) => {
@@ -571,7 +577,7 @@ async function sendMessage(event, overrides = {}) {
       state.activeConversationId = conversationId;
       state.conversations = [result.conversation, ...state.conversations];
     }
-    if (!overrides.skipUserBubble && !overrides.regenerateFromMessageId) {
+    if (!overrides.skipUserBubble && !overrides.regenerateFromMessageId && !overrides.continueFromMessageId) {
       temporaryUserMessage = { id: `pending-${Date.now()}`, role: "user", content, createdAt: Date.now() };
       state.messages = [...state.messages, temporaryUserMessage];
     }
@@ -588,6 +594,7 @@ async function sendMessage(event, overrides = {}) {
       mode: state.selectedMode,
       attachmentIds,
       regenerateFromMessageId: overrides.regenerateFromMessageId,
+      continueFromMessageId: overrides.continueFromMessageId,
       editMessageId: overrides.editMessageId,
       webSearch,
       responseStyle: state.responseStyle,

@@ -105,6 +105,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .markdown th, .markdown td { padding: 7px 9px; border: 1px solid #34383a; text-align: left; vertical-align: top; }
 .markdown th { background: #1a1d1f; color: #eceee9; font-weight: 600; }
 .message-model { margin: 0 0 8px; color: #8b938f; font-size: 10px; letter-spacing: 0.04em; }
+.incomplete-note { margin: 0 0 10px; padding: 8px 10px; border: 1px solid #5a4630; border-radius: 8px; background: #2a2218; color: #e6c48a; font-size: 11px; }
+.markdown hr { margin: 16px 0; border: 0; border-top: 1px solid #34383a; }
+.markdown blockquote { margin: 0 0 14px; padding: 8px 12px; border-left: 3px solid #637468; color: #b7bdb8; }
 .composer-tools { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 8px 4px 0; color: #9aa19e; font-size: 11px; }
 .composer-tools select { margin-left: 6px; padding: 3px 6px; border: 1px solid #3a3e40; border-radius: 6px; background: #151719; color: #e8eae5; }
 .copy-button { margin-left: auto; padding: 4px 8px; border: 1px solid #353a3b; border-radius: 6px; background: transparent; color: #959b9a; cursor: pointer; font-size: 10px; }

@@ -68,6 +68,12 @@ test("markdown renderer supports common syntax while escaping untrusted HTML", (
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.doesNotMatch(html, /<img src=x|<script>alert/);
   assert.match(html, /<table><tbody><tr><th>A<\/th><th>B<\/th><\/tr><tr><td>1<\/td><td>2<\/td><\/tr><\/tbody><\/table>/);
+  const escaped = renderMarkdown("Title\n\\---\nHello \\<br> there");
+  assert.match(escaped, /<hr>/);
+  assert.doesNotMatch(escaped, /\\---|\\<br>/);
+  const math = renderMarkdown("Display \\[E = mc^2\\] and inline \\(a + b\\).");
+  assert.match(math, /\\\[E = mc\^2\\\]/);
+  assert.match(math, /\\\(a \+ b\\\)/);
 });
 
 test("login normalizes the Stage 1 session token response", async () => {

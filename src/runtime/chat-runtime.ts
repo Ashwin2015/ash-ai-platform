@@ -1,7 +1,8 @@
+import { capGeneration } from "../chat/assistant-prompt.ts";
 import { PlatformError } from "../errors.ts";
 import { scoreModelForTask } from "../providers/free-catalog.ts";
 import type { ProviderRegistry } from "../providers/registry.ts";
-import type { ChatTask, ChatTurn, ModelDescriptor } from "../providers/provider.ts";
+import type { ChatTask, ChatTurn, ModelDescriptor, StreamFinish } from "../providers/provider.ts";
 
 export type RoutingMode = "auto" | "free_cloud" | "local_only" | "manual";
 
@@ -14,6 +15,7 @@ export type PrepareOptions = {
   task?: ChatTask;
   requireVision?: boolean;
   maxOutputTokens?: number;
+  minOutputTokens?: number;
   temperature?: number;
 };
 
@@ -21,9 +23,12 @@ const MODEL_FAILURE_COOLDOWN_MS = 30_000;
 const AUTO_CANDIDATE_LIMIT = 6;
 const AUTO_PER_PROVIDER_LIMIT = 2;
 
-function streamOptions(options: PrepareOptions) {
+function streamOptions(options: PrepareOptions, model: ModelDescriptor, messages: ChatTurn[]) {
+  const promptChars = messages.reduce((sum, message) => sum + message.content.length, 0);
   return {
-    maxOutputTokens: options.maxOutputTokens,
+    maxOutputTokens: options.maxOutputTokens
+      ? capGeneration(options.maxOutputTokens, model, promptChars)
+      : undefined,
     temperature: options.temperature,
   };
 }
@@ -70,7 +75,7 @@ export class ChatRuntime {
       this.assertTextChat(model, options);
       const provider = this.providers.get(model.providerId);
       if (!provider) throw new PlatformError("model_unavailable", "The selected provider is not registered.", 422);
-      return { model, stream: provider.streamChat(model.id, messages, signal, streamOptions(options)) };
+      return { model, stream: provider.streamChat(model.id, messages, signal, streamOptions(options, model, messages)) };
     }
 
     let lastFailure: unknown;
@@ -78,7 +83,7 @@ export class ChatRuntime {
       const provider = this.providers.get(model.providerId);
       if (!provider) continue;
       try {
-        const iterator = provider.streamChat(model.id, messages, signal, streamOptions(options))[Symbol.asyncIterator]();
+        const iterator = provider.streamChat(model.id, messages, signal, streamOptions(options, model, messages))[Symbol.asyncIterator]();
         const first = await this.firstText(iterator);
         if (!first) {
           throw new PlatformError("provider_unavailable", "The model returned an empty response.", 502);
@@ -117,10 +122,13 @@ export class ChatRuntime {
     if (mode === "manual") {
       return eligible.filter((model) => model.providerId === providerId && model.id === modelId).slice(0, 1);
     }
+    const extras = { minOutputTokens: options.minOutputTokens ?? options.maxOutputTokens };
     const sorted = (list: ModelDescriptor[]) => list.sort((left, right) =>
-      scoreModelForTask(right, task) - scoreModelForTask(left, task) ||
+      scoreModelForTask(right, task, extras) - scoreModelForTask(left, task, extras) ||
       Number(left.locality !== "local") - Number(right.locality !== "local") ||
       Number(left.pricing === "limited_free") - Number(right.pricing === "limited_free") ||
+      (right.contextWindow ?? 0) - (left.contextWindow ?? 0) ||
+      (right.maxOutputTokens ?? 0) - (left.maxOutputTokens ?? 0) ||
       left.providerId.localeCompare(right.providerId) ||
       left.id.localeCompare(right.id),
     );
@@ -178,11 +186,11 @@ export class ChatRuntime {
     return true;
   }
 
-  private async *prepend(first: string, iterator: AsyncIterator<string>) {
+  private async *prepend(first: string, iterator: AsyncIterator<string, StreamFinish | void>): AsyncGenerator<string, StreamFinish | void> {
     yield first;
     while (true) {
       const next = await iterator.next();
-      if (next.done) return;
+      if (next.done) return next.value;
       if (next.value) yield next.value;
     }
   }

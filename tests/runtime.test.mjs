@@ -4,13 +4,15 @@ import { PlatformError } from "../src/errors.ts";
 import { ProviderRegistry } from "../src/providers/registry.ts";
 import { ChatRuntime } from "../src/runtime/chat-runtime.ts";
 
-function model(providerId, id, { locality = "cloud", pricing = "free", text = true } = {}) {
+function model(providerId, id, { locality = "cloud", pricing = "free", text = true, maxOutputTokens, contextWindow } = {}) {
   return {
     providerId,
     id,
     displayName: id,
     locality,
     pricing,
+    maxOutputTokens,
+    contextWindow,
     capabilities: {
       textInput: text,
       textOutput: text,
@@ -196,6 +198,45 @@ test("generation limits are passed through to the selected provider", async () =
   assert.deepEqual(await Array.fromAsync(result.stream), ["ok"]);
   assert.equal(received.maxOutputTokens, 8192);
   assert.equal(received.temperature, 0.55);
+});
+
+test("AUTO prefers models with enough output capacity for long answers", async () => {
+  const tiny = model("cloud", "tiny", { maxOutputTokens: 256, contextWindow: 2_000 });
+  const wide = model("cloud", "wide", { maxOutputTokens: 8_192, contextWindow: 128_000 });
+  const cloud = provider("cloud", [tiny, wide], async function* (id) { yield id; });
+  const runtime = runtimeFor(cloud);
+  const result = await runtime.prepare("auto", "", "", [{ role: "user", content: "Write a long analysis" }], undefined, {
+    task: "chat",
+    minOutputTokens: 4_096,
+    maxOutputTokens: 4_096,
+  });
+  assert.equal(result.model.id, "wide");
+});
+
+test("generation budget is capped to the selected model output limit", async () => {
+  let received;
+  const cloud = provider("cloud", [model("cloud", "free", { maxOutputTokens: 512, contextWindow: 2_048 })], async function* (_id, _messages, _signal, options) {
+    received = options;
+    yield "ok";
+  });
+  const runtime = runtimeFor(cloud);
+  const result = await runtime.prepare("manual", "cloud", "free", [{ role: "user", content: "Hi" }], undefined, { maxOutputTokens: 8_192, temperature: 0.55 });
+  assert.deepEqual(await Array.fromAsync(result.stream), ["ok"]);
+  assert.equal(received.maxOutputTokens, 512);
+});
+
+test("LOCAL ONLY never invokes a cloud provider", async () => {
+  let cloudCalls = 0;
+  const local = provider("ollama", [model("ollama", "local", { locality: "local" })], async function* () { yield "local"; });
+  const cloud = provider("cloud", [model("cloud", "free")], async function* () {
+    cloudCalls += 1;
+    yield "cloud";
+  });
+  const runtime = runtimeFor(local, cloud);
+  const result = await runtime.prepare("local_only", "", "", [{ role: "user", content: "Hi" }]);
+  assert.equal(result.model.locality, "local");
+  assert.deepEqual(await Array.fromAsync(result.stream), ["local"]);
+  assert.equal(cloudCalls, 0);
 });
 
 test("AUTO refuses paid-only models", async () => {

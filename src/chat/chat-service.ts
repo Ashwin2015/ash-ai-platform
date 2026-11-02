@@ -8,7 +8,7 @@ import type { MemoryService } from "../memory/memory-service.ts";
 import type { PlatformDatabase } from "../storage/database.ts";
 import type { FileStore } from "../storage/files.ts";
 import { searchWikipedia } from "../research/wikipedia.ts";
-import { assistantSystemPrompt, clipTurn, generationLimits, normalizeResponseStyle, type ResponseStyle } from "./assistant-prompt.ts";
+import { assistantSystemPrompt, classifyFinish, clipTurn, compactHistory, CONTINUE_INSTRUCTION, generationLimits, normalizeResponseStyle, type ResponseStyle, type StreamFinishReason } from "./assistant-prompt.ts";
 
 const MAX_CHAT_CHARS = 8_000;
 const MAX_CONTEXT_MESSAGES = 30;
@@ -19,8 +19,9 @@ export type ReplyOptions = {
   regenerateFromMessageId?: string;
   editMessageId?: string;
   webSearch?: boolean;
-  responseStyle?: ResponseStyle;
+  responseStyle?: ResponseStyle | string;
   deepReasoning?: boolean;
+  continueFromMessageId?: string;
 };
 
 export class ChatService {
@@ -91,10 +92,11 @@ export class ChatService {
     options: ReplyOptions = {},
   ) {
     const regenerating = Boolean(options.regenerateFromMessageId);
+    const continuing = Boolean(options.continueFromMessageId);
     if (content.length > MAX_CHAT_CHARS) {
       throw new PlatformError("invalid_request", `Message content must be 1–${MAX_CHAT_CHARS} characters.`, 400);
     }
-    if (!regenerating && !content.trim()) {
+    if (!regenerating && !continuing && !content.trim()) {
       throw new PlatformError("invalid_request", `Message content must be 1–${MAX_CHAT_CHARS} characters.`, 400);
     }
     const conversation = await this.database.findConversation(userId, conversationId);
@@ -103,6 +105,14 @@ export class ChatService {
     const effectiveMode: RoutingMode = project?.localOnly && mode !== "manual" ? "local_only" : mode;
     if (project?.localOnly && mode === "free_cloud") {
       throw new PlatformError("forbidden", "This project is local-only and cannot use cloud providers.", 403);
+    }
+
+    if (continuing) {
+      const target = await this.database.findMessage(userId, conversationId, options.continueFromMessageId || "");
+      if (!target || target.role !== "assistant") {
+        throw new PlatformError("not_found", "There is no assistant reply to continue.", 404);
+      }
+      content = CONTINUE_INSTRUCTION;
     }
 
     if (options.regenerateFromMessageId || options.editMessageId) {
@@ -188,19 +198,17 @@ export class ChatService {
         : deepReasoning
           ? "reasoning"
           : inferTaskFromText(normalizedContent);
-    const historyTurns: ChatTurn[] = history.slice(-MAX_CONTEXT_MESSAGES).map((message) => ({
-      role: message.role,
-      content: clipTurn(message.content),
-    }));
+    const historyTurns: ChatTurn[] = compactHistory(
+      history.slice(-MAX_CONTEXT_MESSAGES).map((message) => ({ role: message.role, content: message.content })),
+    );
     const userTurn: ChatTurn = {
       role: "user",
       content: clipTurn(normalizedContent),
       ...(images.length ? { images } : {}),
     };
     const lastHistory = historyTurns.at(-1);
-    const conversationTurns = lastHistory?.role === "user" && lastHistory.content === userTurn.content && !images.length
-      ? historyTurns
-      : [...historyTurns, userTurn];
+    const skipDuplicateUser = !continuing && lastHistory?.role === "user" && lastHistory.content === userTurn.content && !images.length;
+    const conversationTurns = skipDuplicateUser ? historyTurns : [...historyTurns, userTurn];
     const turns: ChatTurn[] = [
       { role: "system", content: assistantSystemPrompt({ style, deepReasoning, extraContext }) },
       ...conversationTurns,
@@ -213,10 +221,10 @@ export class ChatService {
       modelId,
       turns,
       signal,
-      { task, requireVision: images.length > 0, ...limits },
+      { task, requireVision: images.length > 0, ...limits, minOutputTokens: limits.maxOutputTokens },
     );
     const lastStoredUser = [...history].reverse().find((message) => message.role === "user");
-    const reuseUser = regenerating && lastStoredUser?.content === normalizedContent;
+    const reuseUser = continuing || (regenerating && lastStoredUser?.content === normalizedContent);
     const userMessage = reuseUser && lastStoredUser
       ? lastStoredUser
       : {
@@ -236,19 +244,35 @@ export class ChatService {
     return { userMessage, model: prepared.model, stream: prepared.stream, suggestedMemories: this.memories?.suggestFromMessage(normalizedContent) ?? [] };
   }
 
-  async saveAssistantReply(userId: string, conversationId: string, content: string, model?: { providerId: string; id: string; displayName?: string; locality?: string; pricing?: string }) {
+  async saveAssistantReply(
+    userId: string,
+    conversationId: string,
+    content: string,
+    model?: { providerId: string; id: string; displayName?: string; locality?: string; pricing?: string },
+    extras: { finishReason?: StreamFinishReason | string; truncated?: boolean } = {},
+  ) {
+    const status = classifyFinish(content, extras.finishReason);
+    const truncated = extras.truncated === true || status.truncated;
+    const filtered = status.filtered;
+    const complete = extras.truncated === true ? false : status.complete;
     const message = {
       id: randomUUID(),
       role: "assistant" as const,
       content,
       createdAt: this.now(),
-      metadata: model ? JSON.stringify({
-        providerId: model.providerId,
-        modelId: model.id,
-        displayName: model.displayName,
-        locality: model.locality,
-        pricing: model.pricing,
-      }) : null,
+      metadata: JSON.stringify({
+        ...(model ? {
+          providerId: model.providerId,
+          modelId: model.id,
+          displayName: model.displayName,
+          locality: model.locality,
+          pricing: model.pricing,
+        } : {}),
+        finishReason: extras.finishReason || (filtered ? "content_filter" : complete ? "stop" : "length"),
+        truncated: truncated && !filtered,
+        filtered,
+        complete: complete && !filtered && !truncated,
+      }),
     };
     await this.database.appendMessage(userId, conversationId, message);
     return message;

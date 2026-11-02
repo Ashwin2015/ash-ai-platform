@@ -18,8 +18,11 @@ export type ModelDescriptor = {
   capabilities: ModelCapabilities;
   nativeCapabilities?: Partial<ModelCapabilities>;
   contextWindow?: number;
+  maxOutputTokens?: number;
   note?: string;
 };
+
+export type StreamFinish = { finishReason?: "stop" | "length" | "content_filter" | "error" };
 
 export type ChatImage = { mimeType: string; base64: string };
 
@@ -41,6 +44,6 @@ export interface ModelProvider {
   readonly displayName: string;
   listModels(signal?: AbortSignal): Promise<ModelDescriptor[]>;
   health?(signal?: AbortSignal): Promise<{ available: boolean; configured: boolean; modelCount: number; message?: string }>;
-  streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncIterable<string>;
+  streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncGenerator<string, StreamFinish | void>;
   embed?(texts: string[], signal?: AbortSignal): Promise<number[][]>;
 }

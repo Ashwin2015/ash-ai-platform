@@ -1,7 +1,7 @@
 import { PlatformError } from "../errors.ts";
 import { classifyGeminiPricing } from "./free-catalog.ts";
 import { providerFetch, readJson, readSseJson } from "./http.ts";
-import type { ChatTurn, ModelDescriptor, ModelProvider, StreamChatOptions } from "./provider.ts";
+import type { ChatTurn, ModelDescriptor, ModelProvider, StreamChatOptions, StreamFinish } from "./provider.ts";
 
 type GeminiCatalog = {
   models?: Array<{
@@ -9,6 +9,7 @@ type GeminiCatalog = {
     displayName?: string;
     supportedGenerationMethods?: string[];
     inputTokenLimit?: number;
+    outputTokenLimit?: number;
   }>;
 };
 type GeminiChunk = {
@@ -72,6 +73,7 @@ export class GeminiProvider implements ModelProvider {
           locality: "cloud" as const,
           pricing,
           contextWindow: model.inputTokenLimit,
+          maxOutputTokens: model.outputTokenLimit,
           capabilities: {
             textInput: true,
             textOutput: true,
@@ -92,11 +94,15 @@ export class GeminiProvider implements ModelProvider {
     return models;
   }
 
-  async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncIterable<string> {
+  async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncGenerator<string, StreamFinish | void> {
     const allowed = await this.listModels(signal);
-    if (!allowed.some((model) => model.id === modelId)) {
+    const selected = allowed.find((model) => model.id === modelId);
+    if (!selected) {
       throw new PlatformError("model_unavailable", "That Gemini model is not verified as free-tier for this platform.", 422);
     }
+    const maxOutputTokens = options?.maxOutputTokens
+      ? Math.min(options.maxOutputTokens, selected.maxOutputTokens || options.maxOutputTokens)
+      : undefined;
     const system = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n");
     const contents = messages.filter((message) => message.role !== "system").map((message, index, list) => {
       const lastUser = [...list].reverse().find((item) => item.role === "user");
@@ -120,16 +126,24 @@ export class GeminiProvider implements ModelProvider {
           contents,
           generationConfig: {
             temperature: options?.temperature ?? 0.6,
-            ...(options?.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+            ...(maxOutputTokens ? { maxOutputTokens } : {}),
           },
         }),
         signal,
       },
       this.displayName,
-      180_000,
+      300_000,
     );
     let emitted = false;
+    let finish: StreamFinish = { finishReason: "stop" };
     for await (const chunk of readSseJson<GeminiChunk>(response, this.displayName)) {
+      if (chunk.promptFeedback?.blockReason && !emitted) {
+        throw new PlatformError("provider_unavailable", "Gemini blocked this prompt.", 502);
+      }
+      const reason = chunk.candidates?.[0]?.finishReason;
+      if (reason === "MAX_TOKENS") finish = { finishReason: "length" };
+      else if (reason === "SAFETY" || reason === "BLOCKLIST" || reason === "PROHIBITED_CONTENT") finish = { finishReason: "content_filter" };
+      else if (reason === "STOP") finish = { finishReason: "stop" };
       const text = chunk.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
       if (text) {
         emitted = true;
@@ -137,5 +151,6 @@ export class GeminiProvider implements ModelProvider {
       }
     }
     if (!emitted) throw new PlatformError("provider_unavailable", "Gemini returned an empty response.", 502);
+    return finish;
   }
 }

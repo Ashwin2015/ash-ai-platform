@@ -578,7 +578,7 @@ export function createPlatformServer(config: PlatformConfig) {
         }
         if (method === "POST" && hasMessagesSuffix) {
           const body = await readJson(request);
-          allowKeys(body, ["content", "mode", "providerId", "modelId", "attachmentIds", "regenerateFromMessageId", "editMessageId", "webSearch", "responseStyle", "deepReasoning"]);
+          allowKeys(body, ["content", "mode", "providerId", "modelId", "attachmentIds", "regenerateFromMessageId", "editMessageId", "webSearch", "responseStyle", "deepReasoning", "continueFromMessageId"]);
           if (typeof body.content !== "string") {
             throw new PlatformError("invalid_request", "Message content is required.", 400);
           }
@@ -611,8 +611,9 @@ export function createPlatformServer(config: PlatformConfig) {
               regenerateFromMessageId: typeof body.regenerateFromMessageId === "string" ? body.regenerateFromMessageId : undefined,
               editMessageId: typeof body.editMessageId === "string" ? body.editMessageId : undefined,
               webSearch: body.webSearch === true,
-              responseStyle: body.responseStyle === "concise" || body.responseStyle === "detailed" ? body.responseStyle : "balanced",
+              responseStyle: typeof body.responseStyle === "string" ? body.responseStyle : "normal",
               deepReasoning: body.deepReasoning === true,
+              continueFromMessageId: typeof body.continueFromMessageId === "string" ? body.continueFromMessageId : undefined,
             },
           );
           setHeaders(response);
@@ -631,20 +632,51 @@ export function createPlatformServer(config: PlatformConfig) {
           sendEvent("model", { providerId: model.providerId, modelId: model.id, displayName: model.displayName, locality: model.locality, pricing: model.pricing });
           if (suggestedMemories.length) sendEvent("memory_suggestions", { suggestions: suggestedMemories });
           let assistantText = "";
+          let finishReason: "stop" | "length" | "content_filter" | "cancelled" | "error" = "stop";
           try {
-            for await (const text of assistantStream) {
-              if (abortController.signal.aborted) break;
-              assistantText += text;
-              sendEvent("token", { text });
+            const iterator = assistantStream[Symbol.asyncIterator]();
+            while (true) {
+              const next = await iterator.next();
+              if (next.done) {
+                const reason = next.value && typeof next.value === "object" ? next.value.finishReason : undefined;
+                if (reason === "length" || reason === "content_filter" || reason === "error" || reason === "stop") {
+                  finishReason = reason;
+                }
+                break;
+              }
+              if (abortController.signal.aborted) {
+                finishReason = "cancelled";
+                break;
+              }
+              if (next.value) {
+                assistantText += next.value;
+                sendEvent("token", { text: next.value });
+              }
             }
-            if (assistantText && !abortController.signal.aborted) {
-              const assistantMessage = await chat.saveAssistantReply(user.id, conversationId, assistantText, model);
-              sendEvent("done", { messageId: assistantMessage.id });
+            if (assistantText) {
+              const assistantMessage = await chat.saveAssistantReply(user.id, conversationId, assistantText, model, { finishReason });
+              const meta = JSON.parse(assistantMessage.metadata || "{}");
+              sendEvent("done", {
+                messageId: assistantMessage.id,
+                complete: meta.complete === true,
+                truncated: meta.truncated === true,
+                filtered: meta.filtered === true,
+                finishReason,
+              });
             } else if (!abortController.signal.aborted) {
               sendEvent("error", { code: "provider_unavailable", message: "The model returned an empty response." });
             }
           } catch (error) {
             const payload = errorPayload(error).body.error;
+            if (assistantText) {
+              const assistantMessage = await chat.saveAssistantReply(user.id, conversationId, assistantText, model, { finishReason: "error", truncated: true });
+              sendEvent("done", {
+                messageId: assistantMessage.id,
+                complete: false,
+                truncated: true,
+                finishReason: "error",
+              });
+            }
             sendEvent("error", payload);
           } finally {
             response.end();
@@ -675,8 +707,8 @@ export function createPlatformServer(config: PlatformConfig) {
     });
   });
 
-  server.requestTimeout = 180_000;
-  server.headersTimeout = 180_000;
+  server.requestTimeout = 300_000;
+  server.headersTimeout = 300_000;
   server.keepAliveTimeout = 5_000;
   return { server, database, files };
 }

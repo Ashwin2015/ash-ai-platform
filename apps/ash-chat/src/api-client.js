@@ -168,6 +168,10 @@ async function streamMessage(conversationId, payload, { signal, onToken, onEvent
           complete = true;
           onEvent?.("done", event.data);
         } else if (event.type === "error") {
+          if (complete) {
+            onEvent?.("error", event.data);
+            continue;
+          }
           const error = new Error(event.data.message || "The model could not finish this response.");
           error.code = event.data.code || "provider_unavailable";
           throw error;

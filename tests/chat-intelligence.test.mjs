@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createPlatformServer } from "../src/http/server.ts";
-import { assistantSystemPrompt, generationLimits, normalizeResponseStyle } from "../src/chat/assistant-prompt.ts";
+import { assistantSystemPrompt, capGeneration, classifyFinish, CONTINUE_INSTRUCTION, generationLimits, looksTruncated, normalizeResponseStyle } from "../src/chat/assistant-prompt.ts";
 import { inferTaskFromText, scoreModelForTask } from "../src/providers/free-catalog.ts";
 import { renderMarkdown } from "../apps/ash-chat/src/markdown.js";
 
@@ -57,13 +57,20 @@ async function readSse(response) {
 
 test("response styles, reasoning prompt, and task scoring [unit]", () => {
   assert.equal(normalizeResponseStyle("detailed"), "detailed");
-  assert.equal(normalizeResponseStyle("nope"), "balanced");
+  assert.equal(normalizeResponseStyle("nope"), "normal");
   assert.equal(generationLimits("concise").maxOutputTokens, 700);
-  assert.equal(generationLimits("detailed").maxOutputTokens, 8192);
+  assert.equal(generationLimits("detailed").maxOutputTokens, 4096);
+  assert.equal(generationLimits("deep_analysis").maxOutputTokens, 8192);
+  assert.equal(capGeneration(8192, { maxOutputTokens: 512, contextWindow: 2048 }, 20), 512);
+  assert.equal(looksTruncated("complete sentence.", "stop"), false);
+  assert.equal(looksTruncated("| Competitor | Acme", "length"), true);
+  assert.deepEqual(classifyFinish("blocked fragment", "content_filter"), { filtered: true, truncated: false, complete: false });
+  assert.deepEqual(classifyFinish("| Competitor | Acme", "length"), { filtered: false, truncated: true, complete: false });
+  assert.deepEqual(classifyFinish("finished.", "stop"), { filtered: false, truncated: false, complete: true });
   const detailed = assistantSystemPrompt({ style: "detailed", deepReasoning: false });
   assert.match(detailed, /thorough/i);
   assert.match(detailed, /Markdown/);
-  const reasoning = assistantSystemPrompt({ style: "balanced", deepReasoning: true });
+  const reasoning = assistantSystemPrompt({ style: "normal", deepReasoning: true });
   assert.match(reasoning, /Reasoning summary/);
   assert.doesNotMatch(reasoning, /hidden scratchpad is available/i);
   assert.equal(inferTaskFromText("Write a typescript function"), "coding");
@@ -83,6 +90,16 @@ test("markdown renderer supports tables and keeps HTML escaped", () => {
   assert.match(html, /<table><tbody><tr><th>Col A<\/th><th>Col B<\/th><\/tr>/);
   assert.match(html, /<td><strong>one<\/strong><\/td><td><code>two<\/code><\/td>/);
   assert.match(html, /&lt;img src=x&gt;/);
+  const escaped = renderMarkdown("Heading\n\\---\nA \\<br> break\n\n> quoted");
+  assert.match(escaped, /<hr>/);
+  assert.doesNotMatch(escaped, /\\---|\\&lt;br&gt;|\\<br>/);
+  assert.match(escaped, /<blockquote>/);
+  const streamingTable = renderMarkdown("| Competitor | Strengths");
+  assert.match(streamingTable, /<table>/);
+  const math = renderMarkdown("Keep \\[x^2\\] and \\(y\\) intact.");
+  assert.match(math, /\\\[x\^2\\\]/);
+  assert.match(math, /\\\(y\\\)/);
+  assert.match(renderMarkdown("Intro\n\\---\nOutro"), /<hr>/);
 });
 
 test("conversation context, regenerate, styles, fallback, and isolation [mock providers]", async (t) => {
@@ -90,6 +107,7 @@ test("conversation context, regenerate, styles, fallback, and isolation [mock pr
   const groqBodies = [];
   const geminiBodies = [];
   let geminiFails = true;
+  let groqMode = "ok";
 
   const groq = createServer(async (request, response) => {
     if (request.url === "/models") {
@@ -104,7 +122,12 @@ test("conversation context, regenerate, styles, fallback, and isolation [mock pr
       for await (const chunk of request) chunks.push(chunk);
       groqBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       response.writeHead(200, { "Content-Type": "text/event-stream" });
-      response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "GROQ_OK" } }] })}\n\n`);
+      const text = groqMode === "truncate" ? "| Competitor | Acme" : groqMode === "error" ? "PARTIAL" : groqMode === "filter" ? "blocked fragment" : "GROQ_OK";
+      const finish = groqMode === "truncate" ? "length" : groqMode === "filter" ? "content_filter" : "stop";
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: groqMode === "error" ? null : finish }] })}\n\n`);
+      if (groqMode === "error") {
+        response.write(`data: ${JSON.stringify({ error: { message: "provider stream failed" } })}\n\n`);
+      }
       response.end("data: [DONE]\n\n");
       return;
     }
@@ -205,7 +228,7 @@ test("conversation context, regenerate, styles, fallback, and isolation [mock pr
   assert.ok(geminiBodies.length >= 1);
   assert.match(JSON.stringify(groqBodies[0].messages), /ASH Chat/);
   assert.match(JSON.stringify(groqBodies[0].messages), /thorough|Reasoning summary/);
-  assert.equal(groqBodies[0].max_tokens, 8192);
+  assert.equal(groqBodies[0].max_tokens, 4096);
 
   geminiFails = false;
   const follow = await fetch(`${apiUrl}/api/v1/chat/conversations/${conversationId}/messages`, {
@@ -262,4 +285,87 @@ test("conversation context, regenerate, styles, fallback, and isolation [mock pr
   assert.equal(manualModel.data.providerId, "gemini");
   assert.equal(manualModel.data.modelId, "gemini-2.0-flash");
   assert.ok(manualEvents.some((event) => event.data?.text === "GEMINI_OK"));
+  const firstDone = firstEvents.find((event) => event.type === "done");
+  assert.equal(firstDone.data.complete, true);
+
+  groqMode = "truncate";
+  const longChat = await jsonRequest(apiUrl, "/api/v1/chat/conversations", {
+    method: "POST",
+    token: ownerToken,
+    body: { title: "Truncation" },
+  });
+  const longId = longChat.data.conversation.id;
+  const truncated = await fetch(`${apiUrl}/api/v1/chat/conversations/${longId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${ownerToken}` },
+    body: JSON.stringify({ content: "Write a long competitor table.", mode: "auto", responseStyle: "detailed" }),
+  });
+  assert.equal(truncated.status, 200);
+  const truncatedEvents = await readSse(truncated);
+  const truncatedDone = truncatedEvents.find((event) => event.type === "done");
+  assert.equal(truncatedDone.data.complete, false);
+  assert.equal(truncatedDone.data.truncated, true);
+  assert.equal(truncatedDone.data.finishReason, "length");
+  const truncatedMessages = await jsonRequest(apiUrl, `/api/v1/chat/conversations/${longId}/messages`, { token: ownerToken });
+  const truncatedAssistant = truncatedMessages.data.messages.find((message) => message.role === "assistant");
+  assert.match(truncatedAssistant.content, /Competitor/);
+  assert.equal(JSON.parse(truncatedAssistant.metadata).complete, false);
+  const usersBeforeContinue = truncatedMessages.data.messages.filter((message) => message.role === "user").length;
+
+  groqMode = "ok";
+  const continued = await fetch(`${apiUrl}/api/v1/chat/conversations/${longId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${ownerToken}` },
+    body: JSON.stringify({ content: "Continue.", mode: "auto", continueFromMessageId: truncatedAssistant.id }),
+  });
+  assert.equal(continued.status, 200);
+  await readSse(continued);
+  const continueBody = groqBodies.at(-1);
+  assert.match(JSON.stringify(continueBody.messages), /Competitor/);
+  assert.match(JSON.stringify(continueBody.messages), new RegExp(CONTINUE_INSTRUCTION.slice(0, 40)));
+  const afterContinue = await jsonRequest(apiUrl, `/api/v1/chat/conversations/${longId}/messages`, { token: ownerToken });
+  assert.equal(afterContinue.data.messages.filter((message) => message.role === "user").length, usersBeforeContinue);
+  assert.equal(afterContinue.data.messages.filter((message) => message.role === "assistant").length, 2);
+
+  groqMode = "error";
+  const failChat = await jsonRequest(apiUrl, "/api/v1/chat/conversations", {
+    method: "POST",
+    token: ownerToken,
+    body: { title: "Partial error" },
+  });
+  const failId = failChat.data.conversation.id;
+  const failed = await fetch(`${apiUrl}/api/v1/chat/conversations/${failId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${ownerToken}` },
+    body: JSON.stringify({ content: "Say something then fail.", mode: "auto" }),
+  });
+  const failedEvents = await readSse(failed);
+  assert.ok(failedEvents.some((event) => event.type === "done" && event.data.complete === false));
+  assert.ok(failedEvents.some((event) => event.type === "error"));
+  const failedMessages = await jsonRequest(apiUrl, `/api/v1/chat/conversations/${failId}/messages`, { token: ownerToken });
+  assert.match(failedMessages.data.messages.find((message) => message.role === "assistant").content, /PARTIAL/);
+
+  groqMode = "filter";
+  const filterChat = await jsonRequest(apiUrl, "/api/v1/chat/conversations", {
+    method: "POST",
+    token: ownerToken,
+    body: { title: "Filtered" },
+  });
+  const filterId = filterChat.data.conversation.id;
+  const filtered = await fetch(`${apiUrl}/api/v1/chat/conversations/${filterId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${ownerToken}` },
+    body: JSON.stringify({ content: "Ask something blocked.", mode: "auto" }),
+  });
+  const filteredEvents = await readSse(filtered);
+  const filteredDone = filteredEvents.find((event) => event.type === "done");
+  assert.equal(filteredDone.data.complete, false);
+  assert.equal(filteredDone.data.truncated, false);
+  assert.equal(filteredDone.data.filtered, true);
+  assert.equal(filteredDone.data.finishReason, "content_filter");
+  const filteredMessages = await jsonRequest(apiUrl, `/api/v1/chat/conversations/${filterId}/messages`, { token: ownerToken });
+  const filteredMeta = JSON.parse(filteredMessages.data.messages.find((message) => message.role === "assistant").metadata);
+  assert.equal(filteredMeta.filtered, true);
+  assert.equal(filteredMeta.truncated, false);
+  assert.equal(filteredMeta.complete, false);
 });

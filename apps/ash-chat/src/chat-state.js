@@ -29,8 +29,11 @@ export class ChatState extends EventTarget {
     this.responseStyle = (() => {
       try {
         const stored = localStorage.getItem("ash-chat-response-style");
-        return stored === "concise" || stored === "detailed" ? stored : "balanced";
-      } catch { return "balanced"; }
+        if (stored === "concise" || stored === "short") return "short";
+        if (stored === "detailed") return "detailed";
+        if (stored === "deep_analysis" || stored === "deep") return "deep_analysis";
+        return "normal";
+      } catch { return "normal"; }
     })();
     this.deepReasoning = (() => {
       try { return localStorage.getItem("ash-chat-deep-reasoning") === "1"; } catch { return false; }

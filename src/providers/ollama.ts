@@ -1,9 +1,9 @@
 import { PlatformError } from "../errors.ts";
-import type { ChatTurn, ModelDescriptor, ModelProvider, StreamChatOptions } from "./provider.ts";
+import type { ChatTurn, ModelDescriptor, ModelProvider, StreamChatOptions, StreamFinish } from "./provider.ts";
 
 type TagsResponse = { models?: Array<{ name?: string; remote_host?: string }> };
 type ShowResponse = { capabilities?: string[]; model_info?: Record<string, unknown> };
-type ChatChunk = { message?: { content?: string }; done?: boolean; error?: string };
+type ChatChunk = { message?: { content?: string }; done?: boolean; done_reason?: string; error?: string };
 type EmbedResponse = { embedding?: number[]; embeddings?: number[][] };
 
 export class OllamaProvider implements ModelProvider {
@@ -101,7 +101,7 @@ export class OllamaProvider implements ModelProvider {
     }
   }
 
-  async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncIterable<string> {
+  async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncGenerator<string, StreamFinish | void> {
     const models = await this.listModels(signal);
     const model = models.find((item) => item.id === modelId);
     if (!model) throw new PlatformError("model_unavailable", "That local Ollama model is not installed.", 422);
@@ -131,13 +131,14 @@ export class OllamaProvider implements ModelProvider {
         },
       }),
       signal,
-    }, 180_000);
+    }, 300_000);
     if (!response.body) throw new PlatformError("provider_unavailable", "Ollama did not return a response stream.", 503);
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let emittedText = false;
+    let finish: StreamFinish = { finishReason: "stop" };
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -146,12 +147,19 @@ export class OllamaProvider implements ModelProvider {
         buffer = lines.pop() ?? "";
         for (const line of lines) {
           if (!line.trim()) continue;
-          yield* this.parseChunk(line, () => { emittedText = true; });
+          const parsed = this.parseChunk(line, () => { emittedText = true; });
+          if (parsed.finishReason) finish = { finishReason: parsed.finishReason };
+          yield* parsed.texts;
         }
         if (done) break;
       }
-      if (buffer.trim()) yield* this.parseChunk(buffer, () => { emittedText = true; });
+      if (buffer.trim()) {
+        const parsed = this.parseChunk(buffer, () => { emittedText = true; });
+        if (parsed.finishReason) finish = { finishReason: parsed.finishReason };
+        yield* parsed.texts;
+      }
       if (!emittedText) throw new PlatformError("provider_unavailable", "Ollama returned an empty response.", 502);
+      return finish;
     } finally {
       reader.releaseLock();
     }
@@ -177,7 +185,7 @@ export class OllamaProvider implements ModelProvider {
     return vectors;
   }
 
-  private *parseChunk(line: string, onText: () => void): Generator<string> {
+  private parseChunk(line: string, onText: () => void): { texts: string[]; finishReason?: StreamFinish["finishReason"] } {
     let chunk: ChatChunk;
     try {
       chunk = JSON.parse(line) as ChatChunk;
@@ -185,9 +193,15 @@ export class OllamaProvider implements ModelProvider {
       throw new PlatformError("provider_unavailable", "Ollama returned an invalid response stream.", 502);
     }
     if (chunk.error) throw new PlatformError("provider_unavailable", "Ollama could not complete the request.", 502);
+    const texts: string[] = [];
     if (typeof chunk.message?.content === "string" && chunk.message.content) {
       onText();
-      yield chunk.message.content;
+      texts.push(chunk.message.content);
     }
+    let finishReason: StreamFinish["finishReason"];
+    if (chunk.done) {
+      finishReason = chunk.done_reason === "length" ? "length" : "stop";
+    }
+    return { texts, finishReason };
   }
 }

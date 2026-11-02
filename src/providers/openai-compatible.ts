@@ -1,7 +1,7 @@
 import { PlatformError } from "../errors.ts";
 import { isGroqFreeChatModel, isOpenRouterZeroPrice } from "./free-catalog.ts";
 import { providerFetch, readJson, readSseJson } from "./http.ts";
-import type { ChatTurn, ModelDescriptor, ModelProvider, StreamChatOptions } from "./provider.ts";
+import type { ChatTurn, ModelDescriptor, ModelProvider, StreamChatOptions, StreamFinish } from "./provider.ts";
 
 type Catalog = {
   data?: Array<{
@@ -12,10 +12,11 @@ type Catalog = {
     architecture?: { input_modalities?: string[]; output_modalities?: string[] };
     context_length?: number;
     supported_parameters?: string[];
+    top_provider?: { max_completion_tokens?: number; context_length?: number };
   }>;
 };
 type StreamChunk = {
-  choices?: Array<{ delta?: { content?: string } }>;
+  choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
   error?: { message?: string } | string;
 };
 
@@ -79,7 +80,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
         displayName: model.name || model.id,
         locality: "cloud" as const,
         pricing: this.id === "openrouter" ? "free" as const : "limited_free" as const,
-        contextWindow: model.context_length,
+        contextWindow: model.context_length ?? model.top_provider?.context_length,
+        maxOutputTokens: model.top_provider?.max_completion_tokens,
         capabilities: {
           textInput: model.architecture?.input_modalities?.includes("text") ?? true,
           textOutput: model.architecture?.output_modalities?.includes("text") ?? true,
@@ -97,7 +99,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     return models;
   }
 
-  async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncIterable<string> {
+  async *streamChat(modelId: string, messages: ChatTurn[], signal?: AbortSignal, options?: StreamChatOptions): AsyncGenerator<string, StreamFinish | void> {
     const allowed = await this.listModels(signal);
     const selected = allowed.find((model) => model.id === modelId);
     if (!selected) {
@@ -127,16 +129,23 @@ export class OpenAICompatibleProvider implements ModelProvider {
         messages: payload,
         temperature: options?.temperature ?? 0.6,
         stream: true,
-        ...(options?.maxOutputTokens ? { max_tokens: options.maxOutputTokens } : {}),
+        ...(options?.maxOutputTokens
+          ? { max_tokens: selected.maxOutputTokens ? Math.min(options.maxOutputTokens, selected.maxOutputTokens) : options.maxOutputTokens }
+          : {}),
       }),
       signal,
-    }, this.displayName, 180_000);
+    }, this.displayName, 300_000);
     let emitted = false;
+    let finish: StreamFinish = { finishReason: "stop" };
     for await (const chunk of readSseJson<StreamChunk>(response, this.displayName)) {
       if (chunk.error) {
         const message = typeof chunk.error === "string" ? chunk.error : chunk.error.message;
         throw new PlatformError("provider_unavailable", message || `${this.displayName} reported a stream error.`, 502);
       }
+      const reason = chunk.choices?.[0]?.finish_reason;
+      if (reason === "length") finish = { finishReason: "length" };
+      else if (reason === "content_filter") finish = { finishReason: "content_filter" };
+      else if (reason === "stop") finish = { finishReason: "stop" };
       const text = chunk.choices?.[0]?.delta?.content;
       if (text) {
         emitted = true;
@@ -144,6 +153,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       }
     }
     if (!emitted) throw new PlatformError("provider_unavailable", `${this.displayName} returned an empty response.`, 502);
+    return finish;
   }
 
   private headers() {
