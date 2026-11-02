@@ -74,6 +74,17 @@ test("PostgreSQL registers the first account as owner and later accounts as user
     const now = Date.now();
     const conversationId = randomUUID();
     await database.createConversation(first.id, conversationId, "Owner chat", now);
+    assert.deepEqual(await database.listKnowledgeChunks(first.id, null), []);
+    await database.appendMessage(first.id, conversationId, {
+      id: randomUUID(),
+      role: "user",
+      content: "hello",
+      createdAt: now,
+      metadata: null,
+    });
+    const stored = await database.listMessages(first.id, conversationId);
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].content, "hello");
     const own = await database.listConversations(first.id);
     const other = await database.listConversations(second.id);
     assert.equal(own.some((item) => item.id === conversationId), true);

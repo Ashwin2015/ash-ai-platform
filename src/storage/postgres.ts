@@ -388,16 +388,14 @@ export class PostgresDatabase {
   }
 
   async appendMessage(userId: string, conversationId: string, message: MessageRecord) {
-    await this.transact(async (query) => {
-      await query(
-        "INSERT INTO messages (id, user_id, conversation_id, role, content, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [message.id, userId, conversationId, message.role, message.content, message.createdAt, message.metadata ?? null],
-      );
-      await query(
-        "UPDATE conversations SET updated_at = ? WHERE user_id = ? AND id = ?",
-        [message.createdAt, userId, conversationId],
-      );
-    });
+    await this.run(
+      "INSERT INTO messages (id, user_id, conversation_id, role, content, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [message.id, userId, conversationId, message.role, message.content, message.createdAt, message.metadata ?? null],
+    );
+    await this.run(
+      "UPDATE conversations SET updated_at = ? WHERE user_id = ? AND id = ?",
+      [message.createdAt, userId, conversationId],
+    );
   }
 
   async listMessages(userId: string, conversationId: string): Promise<MessageRecord[]> {
@@ -582,10 +580,15 @@ export class PostgresDatabase {
   }
 
   async listKnowledgeChunks(userId: string, projectId: string | null) {
-    const rows = await this.many(
-      "SELECT id, document_id, project_id, ordinal, content, embedding, page FROM knowledge_chunks WHERE user_id = ? AND ((? IS NULL AND project_id IS NULL) OR project_id = ?) ORDER BY ordinal",
-      [userId, projectId, projectId],
-    );
+    const rows = projectId === null
+      ? await this.many(
+        "SELECT id, document_id, project_id, ordinal, content, embedding, page FROM knowledge_chunks WHERE user_id = ? AND project_id IS NULL ORDER BY ordinal",
+        [userId],
+      )
+      : await this.many(
+        "SELECT id, document_id, project_id, ordinal, content, embedding, page FROM knowledge_chunks WHERE user_id = ? AND project_id = ? ORDER BY ordinal",
+        [userId, projectId],
+      );
     return rows.map((row) => ({
       id: String(row.id),
       documentId: String(row.document_id),

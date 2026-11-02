@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { PlatformError } from "../errors.ts";
+import { PlatformError, sanitizeLogError } from "../errors.ts";
 import { inferTaskFromText } from "../providers/free-catalog.ts";
 import type { ChatImage, ChatTask, ChatTurn } from "../providers/provider.ts";
 import type { ChatRuntime, RoutingMode } from "../runtime/chat-runtime.ts";
@@ -135,9 +135,14 @@ export class ChatService {
     }
 
     const normalizedContent = content.trim();
-    const rag = this.knowledge
-      ? await this.knowledge.retrieve(userId, conversation.projectId ?? null, normalizedContent, 4, signal)
-      : [];
+    let rag: Awaited<ReturnType<KnowledgeService["retrieve"]>> = [];
+    if (this.knowledge) {
+      try {
+        rag = await this.knowledge.retrieve(userId, conversation.projectId ?? null, normalizedContent, 4, signal);
+      } catch (error) {
+        console.error(JSON.stringify({ level: "error", scope: "knowledge_retrieve", ...sanitizeLogError(error) }));
+      }
+    }
     const approvedPersonal = this.memories ? await this.memories.list(userId, "personal", null, "approved") : [];
     const approvedProject = conversation.projectId && this.memories
       ? await this.memories.list(userId, "project", conversation.projectId, "approved")
