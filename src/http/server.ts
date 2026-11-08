@@ -277,11 +277,11 @@ export function createPlatformServer(config: PlatformConfig) {
 
       if (method === "POST" && pathname === "/api/v1/auth/register") {
         const body = await readJson(request);
-        allowKeys(body, ["email", "password"]);
+        allowKeys(body, ["email", "password", "inviteCode"]);
         if (typeof body.email !== "string" || typeof body.password !== "string") {
           throw new PlatformError("invalid_request", "email and password are required.", 400);
         }
-        const user = await auth.register(body.email, body.password);
+        const user = await auth.register(body.email, body.password, body.inviteCode);
         const login = await auth.login(body.email, body.password);
         const csrf = newCsrfToken();
         appendCookies(response, authCookieHeaders(login.token, csrf, requestIsSecure(request, config), sessionSeconds));

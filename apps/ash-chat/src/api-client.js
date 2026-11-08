@@ -53,8 +53,8 @@ async function request(path, { method = "GET", body, signal, headers: extraHeade
 
 export const api = {
   health: () => request("/health"),
-  register: async (email, password) => {
-    const result = await request("/auth/register", { method: "POST", body: { email, password } });
+  register: async (email, password, inviteCode = "") => {
+    const result = await request("/auth/register", { method: "POST", body: { email, password, inviteCode } });
     const accessToken = typeof result?.accessToken === "string"
       ? result.accessToken
       : typeof result?.token === "string"
@@ -101,12 +101,43 @@ export const api = {
   deleteMemory: (id) => request(`/memories/${encodeURIComponent(id)}`, { method: "DELETE" }),
   exportAccount: () => request("/account/export"),
   deleteAccount: () => request("/account", { method: "DELETE" }),
-  upload(file, extra = {}) {
+  upload(file, extra = {}, onProgress) {
     const data = new FormData();
     data.append("file", file, file.name);
     if (extra.projectId) data.append("projectId", extra.projectId);
     if (extra.conversationId) data.append("conversationId", extra.conversationId);
-    return request("/uploads", { method: "POST", body: data });
+    if (typeof XMLHttpRequest === "undefined") {
+      return request("/uploads", { method: "POST", body: data });
+    }
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", apiUrl("/uploads"));
+      xhr.timeout = 120_000;
+      const token = getSessionToken();
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      const csrf = getCsrfToken();
+      if (csrf) xhr.setRequestHeader("X-CSRF-Token", csrf);
+      xhr.setRequestHeader("Accept", "application/json");
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
+      };
+      xhr.onerror = () => reject(Object.assign(new Error("The upload could not reach ASH Chat. Check your connection and retry."), { code: "network" }));
+      xhr.ontimeout = () => reject(Object.assign(new Error("The upload timed out. Check your connection and retry."), { code: "timeout" }));
+      xhr.onload = () => {
+        let body = null;
+        try { body = JSON.parse(xhr.responseText || "null"); } catch { body = null; }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress?.(100);
+          resolve(body);
+          return;
+        }
+        const error = new Error(body?.error?.message || `Upload failed (${xhr.status}).`);
+        error.status = xhr.status;
+        error.code = body?.error?.code || "request_failed";
+        reject(error);
+      };
+      xhr.send(data);
+    });
   },
   streamMessage(conversationId, payload, { signal, onToken, onEvent }) {
     return streamMessage(conversationId, payload, { signal, onToken, onEvent });

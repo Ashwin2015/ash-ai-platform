@@ -63,6 +63,7 @@ test("live quality evaluation against configured providers [real inference]", as
     openrouterApiKey: config.openrouterApiKey,
     openrouterBaseUrl: config.openrouterBaseUrl,
     publicOrigin: config.publicOrigin,
+    inviteCode: config.inviteCode,
   });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const apiUrl = `http://127.0.0.1:${app.server.address().port}`;
@@ -76,7 +77,11 @@ test("live quality evaluation against configured providers [real inference]", as
   const register = await fetch(`${apiUrl}/api/v1/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: `live-quality-${Date.now()}@example.test`, password: "live-quality-pass12" }),
+    body: JSON.stringify({
+      email: `live-quality-${Date.now()}@example.test`,
+      password: "live-quality-pass12",
+      ...(config.inviteCode ? { inviteCode: config.inviteCode } : {}),
+    }),
   });
   assert.equal(register.ok, true);
   const { accessToken } = await register.json();

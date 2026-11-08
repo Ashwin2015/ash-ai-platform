@@ -1,14 +1,22 @@
 import { api } from "./api-client.js";
+import { beginAttachment, formatBytes, markFailed, markReady, messageContentForSend, readyAttachmentIds, removeAttachment, sendBlockReason } from "./attachments.js";
 import { clearSessionToken, getSessionToken, saveSessionToken } from "./auth.js";
 import { ChatState } from "./chat-state.js";
 import { renderMarkdown } from "./markdown.js";
+import { beginSend, classifySendFailure, reconnectNotice } from "./send-guard.js";
+import { speechRecognitionConstructor, transcriptFromEvent, voiceErrorMessage } from "./voice.js";
 
 const root = document.querySelector("#app");
 const state = new ChatState();
 let authMode = "login";
 let mobileSidebarOpen = false;
 let networkOnline = navigator.onLine !== false;
+let connectionNotice = "";
 let currentRequestId = 0;
+let sendInFlight = false;
+let replaceLocalId = "";
+let voiceRecognition = null;
+let voiceStopRequested = false;
 const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({
   "&": "&amp;",
   "<": "&lt;",
@@ -31,6 +39,65 @@ function saveDraft(conversationId, value) {
     if (value) sessionStorage.setItem(key, value);
     else sessionStorage.removeItem(key);
   } catch {}
+}
+
+function attachmentKey(conversationId) {
+  return `ash-chat-attachments:${conversationId || "new"}`;
+}
+
+function persistReadyAttachments() {
+  try {
+    const ready = state.pendingAttachments
+      .filter((item) => item.status === "ready" && item.attachmentId)
+      .map(({ localId, fileName, mimeType, size, lastModified, kind, attachmentId }) => ({
+        localId, fileName, mimeType, size, lastModified, kind, attachmentId, status: "ready", progress: 100, error: "", previewUrl: "",
+      }));
+    const key = attachmentKey(state.activeConversationId);
+    if (ready.length) sessionStorage.setItem(key, JSON.stringify(ready));
+    else sessionStorage.removeItem(key);
+  } catch {}
+}
+
+function restoreReadyAttachments(conversationId) {
+  try {
+    const raw = sessionStorage.getItem(attachmentKey(conversationId));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((item) => item && item.attachmentId && item.status === "ready") : [];
+  } catch {
+    return [];
+  }
+}
+
+function releaseAttachmentPreviews(items) {
+  for (const item of items) {
+    if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+  }
+}
+
+function renderAttachmentCards() {
+  return state.pendingAttachments.map((item) => {
+    const status = item.status === "uploading"
+      ? `Uploading ${item.progress || 0}%`
+      : item.status === "error"
+        ? item.error || "Upload failed."
+        : `${item.kind === "pdf" ? "PDF" : "Image"} · ${formatBytes(item.size)} · Uploaded. Not analysed yet.`;
+    const preview = item.previewUrl
+      ? `<img src="${escapeHtml(item.previewUrl)}" alt="">`
+      : `<span class="attachment-file-mark">${item.kind === "pdf" ? "PDF" : "IMG"}</span>`;
+    return `<article class="attachment-card" data-local-id="${escapeHtml(item.localId)}">
+      ${preview}
+      <div class="attachment-meta">
+        <strong>${escapeHtml(item.fileName || "attachment")}</strong>
+        <span class="attachment-status">${escapeHtml(status)}</span>
+        ${item.status === "uploading" ? `<div class="attachment-progress" aria-hidden="true"><span style="width:${Number(item.progress) || 0}%"></span></div>` : ""}
+        <div class="attachment-actions">
+          ${item.status === "error" ? `<button data-action="retry-attachment" data-id="${escapeHtml(item.localId)}" type="button">Retry</button>` : ""}
+          <button data-action="replace-attachment" data-id="${escapeHtml(item.localId)}" type="button">Replace</button>
+          <button data-action="remove-attachment" data-id="${escapeHtml(item.localId)}" type="button">Remove</button>
+        </div>
+      </div>
+    </article>`;
+  }).join("");
 }
 
 function applyTheme() {
@@ -69,13 +136,15 @@ function renderLogin() {
         <p class="eyebrow">ASH AI</p>
         <h1 id="auth-title">${authMode === "login" ? "Welcome back." : "Create your account."}</h1>
         <p class="auth-copy">${authMode === "login"
-          ? "Sign in with the same email on this computer and your phone."
-          : "Register with your email and a password of at least 12 characters."}</p>
+          ? "Sign in with the same email on this computer and your phone. Each account sees only its own chats, files, and memory."
+          : "Create an account with your own email and a password of at least 12 characters. Voice input needs microphone permission and a connection. The + button attaches a JPEG, PNG, WebP, or PDF from the camera, gallery, or files. Uploading a file does not by itself mean it was analysed. Cloud AI does not run in airplane mode."}</p>
         <form id="auth-form" class="auth-form">
           <label for="email">Email</label>
           <input id="email" name="email" type="email" autocomplete="username" maxlength="254" required>
           <label for="password">Password</label>
           <input id="password" name="password" type="password" autocomplete="${authMode === "login" ? "current-password" : "new-password"}" minlength="12" maxlength="1024" required>
+          ${authMode === "register" ? `<label for="invite-code">Invite code</label>
+          <input id="invite-code" name="inviteCode" type="password" autocomplete="off" maxlength="256" required>` : ""}
           <button class="primary-button auth-submit" type="submit">${authMode === "login" ? "Sign in" : "Create account"} <span>→</span></button>
           <p class="form-error" id="auth-error" role="alert" hidden></p>
         </form>
@@ -104,7 +173,7 @@ async function submitAuth(event) {
   try {
     const result = authMode === "login"
       ? await api.login(String(data.get("email")), String(data.get("password")))
-      : await api.register(String(data.get("email")), String(data.get("password")));
+      : await api.register(String(data.get("email")), String(data.get("password")), String(data.get("inviteCode") || ""));
     saveSessionToken(result.accessToken, result.csrfToken);
     state.user = result.user;
     state.error = "";
@@ -282,15 +351,16 @@ function renderApp() {
           </div>
         </header>
         <div class="model-detail">${selectedModel ? `<span class="local-badge">${selectedModel.locality === "local" ? "LOCAL" : "CLOUD"}</span>${state.selectedMode === "manual" ? "" : `${state.selectedMode.replace("_", " ").toUpperCase()} · `}${escapeHtml(selectedModel.providerId)} · ${escapeHtml(selectedModel.displayName)} <span class="detail-separator">·</span> ${escapeHtml(modelDetails(selectedModel))}` : state.selectedMode === "auto" ? "AUTO — FREE FIRST · paid models are excluded" : state.selectedMode === "free_cloud" ? "FREE CLOUD · uses verified free cloud models only" : state.selectedMode === "local_only" ? "LOCAL ONLY · prompts stay on this computer" : escapeHtml(state.health?.providers?.ollama?.message || "Waiting for a model")}</div>
-        ${networkOnline ? "" : `<div class="offline-banner" role="status">You are offline. Cloud AI needs a connection to the hosted ASH backend. Your unsent message stays in this box. Send again when you are back online.</div>`}
+        ${networkOnline ? "" : `<div class="offline-banner" role="status">You are offline. Cloud AI needs a connection to the hosted ASH backend. Your unsent message and selected files stay here. Send again when you are back online.</div>`}
+        ${networkOnline && connectionNotice ? `<div class="reconnect-banner" role="status">${escapeHtml(connectionNotice)}</div>` : ""}
         ${state.error ? `<div class="error-banner" role="alert"><span>!</span>${escapeHtml(state.error)}<button data-action="dismiss-error" type="button" aria-label="Dismiss error">×</button></div>` : ""}
         ${state.memorySuggestions.length ? `<div class="memory-banner">Suggested memory: ${state.memorySuggestions.map((item) => `<button data-action="save-suggestion" data-text="${escapeHtml(item)}" type="button">${escapeHtml(item)}</button>`).join("")}</div>` : ""}
         <section class="conversation-area" aria-live="polite">${renderMessages()}</section>
         <footer class="composer-area">
-          <div class="attachment-row">${state.pendingAttachments.map((item, index) => `<span class="attachment-chip">${escapeHtml(item.fileName)}<button data-action="remove-attachment" data-index="${index}" type="button">×</button></span>`).join("")}</div>
+          <div class="attachment-row">${renderAttachmentCards()}</div>
           <form id="composer" class="composer">
-            <label class="attach-button">＋<input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.pdf,.jpg,.jpeg,.png,.webp" hidden></label>
-            <button class="attach-button" data-action="voice" type="button" aria-label="Voice input">🎙</button>
+            <label class="attach-button" aria-label="Attach a photo or PDF">＋<input id="file-input" type="file" accept="image/*,application/pdf,.pdf" hidden></label>
+            <button class="attach-button ${voiceRecognition ? "listening" : ""}" data-action="voice" type="button" aria-pressed="${voiceRecognition ? "true" : "false"}" aria-label="${voiceRecognition ? "Stop voice input" : "Voice input"}">🎙</button>
             <textarea name="message" rows="1" maxlength="8000" placeholder="Message ASH Chat…" aria-label="Message" ${state.sending ? "disabled" : ""}>${escapeHtml(draftFor(state.activeConversationId))}</textarea>
             ${state.sending
               ? `<button class="stop-button" data-action="stop" type="button" aria-label="Stop generation"><span>■</span></button>`
@@ -313,6 +383,7 @@ function renderApp() {
             <label><input id="web-search" type="checkbox"> Force sources</label>
           </div>
           <div class="composer-hint"><span>Enter to send <kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line</span><span>Auto picks approach. Research uses Wikipedia and Instant Answer sources, not a paid web crawl.</span></div>
+          ${voiceRecognition ? `<p class="voice-status" role="status">Listening… speak now. Tap the microphone again to stop. You can edit the text before sending. Voice transcription uses the browser’s online speech service.</p>` : ""}
         </footer>
       </section>
     </main>`;
@@ -331,7 +402,9 @@ function bindAppEvents() {
       if (action === "new-chat") {
         currentRequestId += 1;
         state.stop();
-        state.update({ activeConversationId: "", messages: [], error: "", sending: false, streamingText: "", pendingAttachments: [], memorySuggestions: [] });
+        releaseAttachmentPreviews(state.pendingAttachments);
+        try { sessionStorage.removeItem(attachmentKey("")); } catch {}
+        state.update({ activeConversationId: "", messages: [], error: "", sending: false, streamingText: "", pendingAttachments: restoreReadyAttachments(""), memorySuggestions: [] });
         mobileSidebarOpen = false;
         return;
       }
@@ -361,7 +434,21 @@ function bindAppEvents() {
       if (action === "approve-memory") void api.updateMemory(id, { status: "approved" }).then(loadMemories);
       if (action === "delete-memory") void api.deleteMemory(id).then(loadMemories);
       if (action === "save-suggestion") void saveSuggestion(text);
-      if (action === "remove-attachment") state.update({ pendingAttachments: state.pendingAttachments.filter((_, itemIndex) => itemIndex !== Number(index)) });
+      if (action === "remove-attachment") {
+        const removed = state.pendingAttachments.find((item) => item.localId === id);
+        if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+        state.pendingAttachments = removeAttachment(state.pendingAttachments, id);
+        persistReadyAttachments();
+        state.update({});
+      }
+      if (action === "retry-attachment") {
+        const item = state.pendingAttachments.find((entry) => entry.localId === id);
+        if (item?.file) void uploadLocalFile(item.file, id);
+      }
+      if (action === "replace-attachment") {
+        replaceLocalId = id;
+        root.querySelector("#file-input")?.click();
+      }
       if (action === "export-account") void exportAccount();
       if (action === "delete-account") void deleteAccount();
       if (action === "voice") startVoice();
@@ -388,7 +475,10 @@ function bindAppEvents() {
   });
   root.querySelector("#file-input")?.addEventListener("change", (event) => {
     const file = event.currentTarget.files?.[0];
-    if (file) void uploadFile(file);
+    event.currentTarget.value = "";
+    const replacing = replaceLocalId;
+    replaceLocalId = "";
+    if (file) void uploadLocalFile(file, replacing);
   });
   root.querySelector("#working-mode")?.addEventListener("change", (event) => {
     const value = event.currentTarget.value;
@@ -410,6 +500,9 @@ function bindAppEvents() {
     saveDraft(state.activeConversationId, textarea.value);
     textarea.style.height = "auto";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
+  });
+  textarea?.addEventListener("focus", () => {
+    setTimeout(() => textarea.scrollIntoView({ block: "nearest" }), 250);
   });
   textarea?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -456,6 +549,7 @@ async function loadApplication() {
       state.health = { providers: { ollama: { available: false, message: "Health status could not be loaded." } } };
     }
     if (loadErrors.length) state.error = loadErrors.join(" ");
+    if (!state.pendingAttachments.length) state.pendingAttachments = restoreReadyAttachments(state.activeConversationId);
     if (state.selectedMode === "manual" && !state.models.some((model) => model.providerId === state.selectedProviderId && model.id === state.selectedModelId)) {
       state.selectedMode = "auto";
       state.selectedProviderId = "";
@@ -476,7 +570,16 @@ async function loadApplication() {
 async function openConversation(id) {
   currentRequestId += 1;
   state.stop();
-  state.update({ activeConversationId: id, messages: [], sending: false, streamingText: "", error: "", loading: true });
+  releaseAttachmentPreviews(state.pendingAttachments);
+  state.update({
+    activeConversationId: id,
+    messages: [],
+    sending: false,
+    streamingText: "",
+    error: "",
+    loading: true,
+    pendingAttachments: restoreReadyAttachments(id),
+  });
   mobileSidebarOpen = false;
   try {
     const result = await api.messages(id);
@@ -520,13 +623,50 @@ async function createProject() {
   await loadApplication();
 }
 
-async function uploadFile(file) {
+async function uploadLocalFile(file, replacingId = "") {
+  if (!networkOnline) {
+    state.update({ error: "You are offline. The file was not uploaded. Reconnect, then choose it again." });
+    return;
+  }
+  let list = state.pendingAttachments;
+  if (replacingId) {
+    const previous = list.find((item) => item.localId === replacingId);
+    if (previous?.previewUrl) URL.revokeObjectURL(previous.previewUrl);
+    list = removeAttachment(list, replacingId);
+  }
+  const localId = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const ownerConversation = state.activeConversationId;
+  const begun = beginAttachment(list, file, localId);
+  if (begun.error || !begun.item) {
+    state.pendingAttachments = list;
+    state.update({ error: begun.error || "That file could not be attached." });
+    return;
+  }
+  const previewUrl = begun.item.kind === "image" && typeof URL.createObjectURL === "function" ? URL.createObjectURL(file) : "";
+  state.pendingAttachments = begun.list.map((item) => item.localId === localId ? { ...item, file, previewUrl } : item);
+  state.update({ error: "" });
   try {
-    const result = await api.upload(file, { projectId: state.activeProjectId || undefined, conversationId: state.activeConversationId || undefined });
-    state.pendingAttachments = [...state.pendingAttachments, result.attachment];
-    renderApp();
+    const result = await api.upload(file, {
+      projectId: state.activeProjectId || undefined,
+      conversationId: state.activeConversationId || undefined,
+    }, (progress) => {
+      const card = root.querySelector(`[data-local-id="${localId}"] .attachment-progress > span`);
+      const label = root.querySelector(`[data-local-id="${localId}"] .attachment-status`);
+      if (card) card.style.width = `${progress}%`;
+      if (label) label.textContent = `Uploading ${progress}%`;
+    });
+    if (!result?.attachment?.id) throw new Error("The server did not confirm this upload.");
+    if (state.activeConversationId !== ownerConversation) return;
+    state.pendingAttachments = markReady(state.pendingAttachments, localId, result.attachment);
+    persistReadyAttachments();
+    state.update({});
   } catch (error) {
-    state.update({ error: error.message || "Upload failed." });
+    if (state.activeConversationId !== ownerConversation) return;
+    const failure = classifySendFailure(error, networkOnline);
+    state.pendingAttachments = markFailed(state.pendingAttachments, localId, failure.kind === "offline"
+      ? "Upload failed because the connection dropped. Retry when you are back online."
+      : (error.message || "Upload failed."));
+    state.update({});
   }
 }
 
@@ -589,26 +729,44 @@ async function editResend(id) {
 
 async function sendMessage(event, overrides = {}) {
   event?.preventDefault();
+  const gate = beginSend(sendInFlight || state.sending);
+  if (!gate.ok) return;
   const textarea = root.querySelector("#composer textarea");
-  const content = overrides.content || textarea?.value.trim();
+  const typed = overrides.content || textarea?.value || "";
+  const attachmentGate = overrides.skipUserBubble || overrides.regenerateFromMessageId || overrides.continueFromMessageId
+    ? ""
+    : sendBlockReason(state.pendingAttachments);
+  if (attachmentGate) {
+    sendInFlight = false;
+    state.update({ error: attachmentGate });
+    return;
+  }
+  const content = overrides.content || messageContentForSend(typed, state.pendingAttachments);
   const webSearch = Boolean(root.querySelector("#web-search")?.checked);
   state.latestResearch = [];
   const selected = activeModel();
-  if (!content || (state.selectedMode === "manual" && !selected) || state.sending) return;
+  if (!content || (state.selectedMode === "manual" && !selected)) {
+    sendInFlight = false;
+    return;
+  }
   if (!networkOnline) {
-    saveDraft(state.activeConversationId, content);
-    state.update({ error: "You are offline. This message was kept in the composer. Send it again when the connection returns." });
+    if (!overrides.content) saveDraft(state.activeConversationId, textarea?.value ?? typed);
+    sendInFlight = false;
+    state.update({ error: classifySendFailure(new Error("failed to fetch"), false).message });
     return;
   }
   const requestId = ++currentRequestId;
   state.stop();
   state.error = "";
+  connectionNotice = "";
   state.sending = true;
+  sendInFlight = true;
   state.streamingText = "";
   state.actualModel = null;
   let conversationId = state.activeConversationId;
   let createdConversation = false;
   let temporaryUserMessage = null;
+  const attachmentIds = readyAttachmentIds(state.pendingAttachments);
   state.update({});
   try {
     if (!conversationId) {
@@ -623,9 +781,6 @@ async function sendMessage(event, overrides = {}) {
       temporaryUserMessage = { id: `pending-${Date.now()}`, role: "user", content, createdAt: Date.now() };
       state.messages = [...state.messages, temporaryUserMessage];
     }
-    if (textarea && !overrides.content) { textarea.value = ""; textarea.style.height = "auto"; saveDraft(conversationId, ""); }
-    const attachmentIds = state.pendingAttachments.map((item) => item.id);
-    state.pendingAttachments = [];
     renderApp();
     const controller = new AbortController();
     state.controller = controller;
@@ -672,16 +827,21 @@ async function sendMessage(event, overrides = {}) {
     state.conversations = state.conversations.map((item) => item.id === conversationId
       ? { ...item, messageCount: state.messages.length, updatedAt: result.conversation.updatedAt }
       : item);
+    if (!overrides.content) saveDraft(conversationId, "");
+    releaseAttachmentPreviews(state.pendingAttachments);
+    state.pendingAttachments = [];
+    persistReadyAttachments();
     state.sending = false;
     state.controller = null;
     state.streamingText = "";
     state.update({});
   } catch (error) {
     if (requestId !== currentRequestId) return;
-    const aborted = error instanceof DOMException && error.name === "AbortError";
+    const failure = classifySendFailure(error, navigator.onLine !== false);
     state.sending = false;
     state.controller = null;
     state.streamingText = "";
+    if (!overrides.content) saveDraft(state.activeConversationId, textarea?.value ?? typed);
     if (conversationId && temporaryUserMessage) {
       try { state.messages = (await api.messages(conversationId)).messages || []; } catch {
         state.messages = state.messages.filter((message) => message !== temporaryUserMessage);
@@ -689,21 +849,23 @@ async function sendMessage(event, overrides = {}) {
     } else if (temporaryUserMessage) {
       state.messages = state.messages.filter((message) => message !== temporaryUserMessage);
     }
-    if (error.status === 401) {
+    if (failure.kind === "auth" || error.status === 401) {
       recoverExpiredSession();
       return;
     }
-    if (!aborted) {
+    if (failure.kind === "offline") networkOnline = false;
+    if (failure.kind !== "aborted") {
       if (createdConversation && !temporaryUserMessage && conversationId) {
         state.conversations = state.conversations.filter((item) => item.id !== conversationId);
         state.activeConversationId = "";
       }
-      const code = error.code;
-      state.error = code === "rate_limited"
-        ? `${error.message || "A free-tier limit was reached."} ASH Chat will try another free model on the next send.`
-        : error.message || "The response could not be completed.";
+      state.error = error.code === "rate_limited"
+        ? `${error.message || "A free-tier limit was reached."} ASH Chat will try another free model on the next send. Your draft was kept.`
+        : failure.message;
     }
     state.update({});
+  } finally {
+    sendInFlight = false;
   }
 }
 
@@ -731,8 +893,8 @@ async function boot() {
   const viewport = window.visualViewport;
   if (viewport) {
     const applyKeyboardInset = () => {
-      const inset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
-      document.documentElement.style.setProperty("--keyboard-inset", `${inset}px`);
+      const height = Math.max(0, Math.round(viewport.height));
+      document.documentElement.style.setProperty("--app-height", `${height}px`);
     };
     viewport.addEventListener("resize", applyKeyboardInset);
     viewport.addEventListener("scroll", applyKeyboardInset);
@@ -742,11 +904,18 @@ async function boot() {
     try { await navigator.serviceWorker.register("/sw.js"); } catch {}
   }
   const showNetwork = () => {
-    networkOnline = navigator.onLine !== false;
+    const nowOnline = navigator.onLine !== false;
+    const cameBack = nowOnline && !networkOnline;
+    networkOnline = nowOnline;
+    if (!nowOnline) connectionNotice = "";
+    else if (cameBack) connectionNotice = reconnectNotice();
     if (getSessionToken() && state.user) renderApp();
   };
   window.addEventListener("online", showNetwork);
   window.addEventListener("offline", showNetwork);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") stopVoice(true);
+  });
   if (!getSessionToken()) {
     renderLogin();
     try {
@@ -777,22 +946,92 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+function stopVoice(silent = false) {
+  voiceStopRequested = silent;
+  const recognition = voiceRecognition;
+  voiceRecognition = null;
+  if (!recognition) return;
+  try { recognition.stop(); } catch { try { recognition.abort(); } catch {} }
+}
+
 function startVoice() {
-  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const textarea = root.querySelector("#composer textarea");
-  if (!Speech || !textarea) {
-    state.update({ error: "Voice input is not available in this browser. Type your message instead." });
+  if (voiceRecognition) {
+    stopVoice(true);
+    state.update({});
     return;
   }
+  const Speech = speechRecognitionConstructor(window);
+  const textarea = root.querySelector("#composer textarea");
+  if (!Speech || !textarea) {
+    state.update({ error: "This browser does not support voice input. You can type your message." });
+    return;
+  }
+  if (navigator.onLine === false) {
+    state.update({ error: voiceErrorMessage("network", { offline: true }) });
+    return;
+  }
+  void beginVoice(Speech, textarea);
+}
+
+async function beginVoice(Speech, textarea) {
+  if (navigator.mediaDevices?.getUserMedia) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    } catch (error) {
+      const denied = error?.name === "NotAllowedError" || error?.name === "SecurityError";
+      state.update({ error: voiceErrorMessage(denied ? "not-allowed" : "audio-capture") });
+      return;
+    }
+  }
+  const liveBox = root.querySelector("#composer textarea") || textarea;
   const recognition = new Speech();
   recognition.lang = navigator.language || "en-GB";
+  recognition.interimResults = true;
+  recognition.continuous = false;
+  recognition.maxAlternatives = 1;
+  const baseText = liveBox.value;
+  let finals = "";
+  let voiceErrorShown = false;
+  voiceStopRequested = false;
+  voiceRecognition = recognition;
+  state.update({});
   recognition.onresult = (event) => {
-    const spoken = Array.from(event.results).map((result) => result[0]?.transcript || "").join(" ").trim();
-    textarea.value = [textarea.value, spoken].filter(Boolean).join(" ");
-    textarea.dispatchEvent(new Event("input"));
+    const next = transcriptFromEvent(baseText, finals, event);
+    finals = next.finals;
+    const box = root.querySelector("#composer textarea");
+    if (!box) return;
+    box.value = next.captured;
+    saveDraft(state.activeConversationId, next.captured);
+    box.dispatchEvent(new Event("input"));
   };
-  recognition.onerror = () => state.update({ error: "Voice input was not captured. You can type instead." });
-  recognition.start();
+  recognition.onerror = (event) => {
+    const box = root.querySelector("#composer textarea");
+    if (box) saveDraft(state.activeConversationId, box.value);
+    const captured = Boolean(box && box.value.trim() && box.value.trim() !== baseText.trim());
+    if (voiceStopRequested) return;
+    const message = voiceErrorMessage(event?.error || "", { captured, offline: navigator.onLine === false });
+    if (!message) return;
+    voiceErrorShown = true;
+    state.update({ error: message });
+  };
+  recognition.onend = () => {
+    const box = root.querySelector("#composer textarea");
+    const captured = Boolean(box && box.value.trim() && box.value.trim() !== baseText.trim());
+    if (box) saveDraft(state.activeConversationId, box.value);
+    voiceRecognition = null;
+    if (!voiceStopRequested && !captured && !voiceErrorShown) {
+      state.update({ error: "No speech was heard. Tap the microphone and try again, or type." });
+      return;
+    }
+    state.update({});
+  };
+  try {
+    recognition.start();
+  } catch {
+    voiceRecognition = null;
+    state.update({ error: "Voice input could not be started. You can type instead." });
+  }
 }
 
 void boot();

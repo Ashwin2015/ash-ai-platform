@@ -19,20 +19,36 @@ export class AuthService {
   private readonly database: PlatformDatabase;
   private readonly sessionTtlSeconds: number;
   private readonly now: () => number;
+  private readonly inviteCode: string;
 
   constructor(
     database: PlatformDatabase,
     _bootstrapKey: string,
     sessionTtlSeconds: number,
     now: () => number = Date.now,
-    _inviteCode = "",
+    inviteCode = "",
   ) {
     this.database = database;
     this.sessionTtlSeconds = sessionTtlSeconds;
     this.now = now;
+    this.inviteCode = inviteCode;
   }
 
-  async register(emailInput: string, password: string) {
+  private assertInvite(provided: unknown) {
+    if (!this.inviteCode) return;
+    const supplied = typeof provided === "string" ? provided : "";
+    if (!supplied || supplied.length > 256) {
+      throw new PlatformError("forbidden", "The invite code was not accepted.", 403);
+    }
+    const actual = createHash("sha256").update(supplied).digest();
+    const expected = createHash("sha256").update(this.inviteCode).digest();
+    if (!timingSafeEqual(actual, expected)) {
+      throw new PlatformError("forbidden", "The invite code was not accepted.", 403);
+    }
+  }
+
+  async register(emailInput: string, password: string, inviteCode?: unknown) {
+    this.assertInvite(inviteCode);
     if (typeof emailInput !== "string" || emailInput.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailInput)) {
       throw new PlatformError("invalid_request", "Enter a valid email address.", 400);
     }

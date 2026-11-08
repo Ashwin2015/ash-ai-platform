@@ -155,13 +155,37 @@ test("versioned API authenticates users, streams Ollama chat, and isolates conve
 
   const extraFieldRejected = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
-    body: { inviteCode: "ignored", email: "one@example.test", password: "correct-horse-battery" },
+    body: { role: "admin", email: "one@example.test", password: "correct-horse-battery" },
   });
   assert.equal(extraFieldRejected.response.status, 400);
 
+  const missingInvite = await jsonRequest(apiUrl, "/api/v1/auth/register", {
+    method: "POST",
+    body: { email: "missing-invite@example.test", password: "correct-horse-battery" },
+  });
+  assert.equal(missingInvite.response.status, 403);
+  assert.equal(missingInvite.data.error.message, "The invite code was not accepted.");
+  assert.doesNotMatch(JSON.stringify(missingInvite.data), /private-invite-code-xyz/);
+
+  const invalidInvite = await jsonRequest(apiUrl, "/api/v1/auth/register", {
+    method: "POST",
+    body: { inviteCode: "wrong-code", email: "wrong-invite@example.test", password: "correct-horse-battery" },
+  });
+  assert.equal(invalidInvite.response.status, 403);
+  assert.equal(invalidInvite.data.error.message, "The invite code was not accepted.");
+  assert.doesNotMatch(JSON.stringify(invalidInvite.data), /private-invite-code-xyz|wrong-code/);
+
+  const rejectedLogin = await jsonRequest(apiUrl, "/api/v1/auth/login", {
+    method: "POST",
+    body: { email: "missing-invite@example.test", password: "correct-horse-battery" },
+  });
+  assert.equal(rejectedLogin.response.status, 401);
+
+  const invite = "private-invite-code-xyz";
   const first = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
     body: {
+      inviteCode: invite,
       email: "One@Example.test",
       password: "correct-horse-battery",
     },
@@ -170,10 +194,21 @@ test("versioned API authenticates users, streams Ollama chat, and isolates conve
   assert.equal(first.data.user.email, "one@example.test");
   assert.equal(first.data.user.isOwner, true);
   assert.equal(typeof first.data.accessToken, "string");
+  assert.equal(first.data.inviteCode, undefined);
+  assert.doesNotMatch(JSON.stringify(first.data), /private-invite-code-xyz/);
+
+  const existingLogin = await jsonRequest(apiUrl, "/api/v1/auth/login", {
+    method: "POST",
+    body: { email: "one@example.test", password: "correct-horse-battery" },
+  });
+  assert.equal(existingLogin.response.status, 200);
+  assert.equal(existingLogin.data.user.email, "one@example.test");
+  assert.equal(existingLogin.data.inviteCode, undefined);
 
   const second = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
     body: {
+      inviteCode: invite,
       email: "two@example.test",
       password: "another-strong-password",
     },
@@ -184,6 +219,7 @@ test("versioned API authenticates users, streams Ollama chat, and isolates conve
   const third = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
     body: {
+      inviteCode: invite,
       email: "three@example.test",
       password: "invite-access-password",
     },
@@ -197,7 +233,7 @@ test("versioned API authenticates users, streams Ollama chat, and isolates conve
 
   const duplicate = await jsonRequest(apiUrl, "/api/v1/auth/register", {
     method: "POST",
-    body: { email: "one@example.test", password: "correct-horse-battery" },
+    body: { inviteCode: invite, email: "one@example.test", password: "correct-horse-battery" },
   });
   assert.equal(duplicate.response.status, 409);
 

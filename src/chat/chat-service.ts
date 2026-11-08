@@ -225,7 +225,10 @@ export class ChatService {
       ...(images.length ? { images } : {}),
     };
     const lastHistory = historyTurns.at(-1);
-    const skipDuplicateUser = !continuing && lastHistory?.role === "user" && lastHistory.content === userTurn.content && !images.length;
+    const skipDuplicateUser = !continuing && lastHistory?.role === "user" && lastHistory.content === userTurn.content;
+    if (skipDuplicateUser && images.length && lastHistory) {
+      historyTurns[historyTurns.length - 1] = { ...lastHistory, images };
+    }
     const conversationTurns = skipDuplicateUser ? historyTurns : [...historyTurns, userTurn];
     const turns: ChatTurn[] = [
       { role: "system", content: assistantSystemPrompt({ style, deepReasoning, extraContext, workingMode, complexity }) },
@@ -242,7 +245,11 @@ export class ChatService {
       { task, requireVision: images.length > 0, ...limits, minOutputTokens: limits.maxOutputTokens },
     );
     const lastStoredUser = [...history].reverse().find((message) => message.role === "user");
-    const reuseUser = continuing || (regenerating && lastStoredUser?.content === normalizedContent);
+    const lastStoredMessage = history.at(-1);
+    const retrySameUser = !continuing && !regenerating && !options.editMessageId
+      && lastStoredMessage?.role === "user"
+      && lastStoredMessage.content === normalizedContent;
+    const reuseUser = continuing || retrySameUser || (regenerating && lastStoredUser?.content === normalizedContent);
     const userMessage = reuseUser && lastStoredUser
       ? lastStoredUser
       : {
