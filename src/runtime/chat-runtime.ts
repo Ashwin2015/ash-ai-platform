@@ -20,6 +20,7 @@ export type PrepareOptions = {
 };
 
 const MODEL_FAILURE_COOLDOWN_MS = 30_000;
+const RATE_LIMIT_COOLDOWN_MS = 5_000;
 const AUTO_CANDIDATE_LIMIT = 6;
 const AUTO_PER_PROVIDER_LIMIT = 2;
 
@@ -78,10 +79,12 @@ export class ChatRuntime {
       return { model, stream: provider.streamChat(model.id, messages, signal, streamOptions(options, model, messages)) };
     }
 
-    let lastFailure: unknown;
+    let lastFailure: PlatformError | undefined;
+    const attempted: string[] = [];
     for (const model of candidates) {
       const provider = this.providers.get(model.providerId);
       if (!provider) continue;
+      attempted.push(`${model.providerId}/${model.id}`);
       try {
         const iterator = provider.streamChat(model.id, messages, signal, streamOptions(options, model, messages))[Symbol.asyncIterator]();
         const first = await this.firstText(iterator);
@@ -99,12 +102,17 @@ export class ChatRuntime {
             ? error
             : new PlatformError("provider_unavailable", "The chat request was interrupted or timed out.", 504);
         }
-        this.failedUntil.set(this.modelKey(model), this.now() + MODEL_FAILURE_COOLDOWN_MS);
-        lastFailure = error;
+        const mapped = error instanceof PlatformError
+          ? error
+          : new PlatformError("provider_unavailable", error instanceof Error ? error.message : "The model could not complete this request.", 503);
+        if (this.shouldCooldown(mapped)) {
+          const cooldown = mapped.code === "rate_limited" ? RATE_LIMIT_COOLDOWN_MS : MODEL_FAILURE_COOLDOWN_MS;
+          this.failedUntil.set(this.modelKey(model), this.now() + cooldown);
+        }
+        lastFailure = mapped;
       }
     }
-    if (lastFailure instanceof PlatformError) throw lastFailure;
-    throw new PlatformError("provider_unavailable", "No eligible free model could complete this request.", 503);
+    throw this.exhaustedCandidatesError(mode, attempted, lastFailure);
   }
 
   private candidates(
@@ -144,14 +152,43 @@ export class ChatRuntime {
   private limitAutoCandidates(models: ModelDescriptor[]) {
     const limited: ModelDescriptor[] = [];
     const perProvider = new Map<string, number>();
+    const queues = new Map<string, ModelDescriptor[]>();
     for (const model of models) {
-      const used = perProvider.get(model.providerId) || 0;
-      if (used >= AUTO_PER_PROVIDER_LIMIT) continue;
-      perProvider.set(model.providerId, used + 1);
-      limited.push(model);
-      if (limited.length >= AUTO_CANDIDATE_LIMIT) break;
+      const queue = queues.get(model.providerId) || [];
+      queue.push(model);
+      queues.set(model.providerId, queue);
+    }
+    let progressed = true;
+    while (limited.length < AUTO_CANDIDATE_LIMIT && progressed) {
+      progressed = false;
+      for (const [providerId, queue] of queues) {
+        const used = perProvider.get(providerId) || 0;
+        if (used >= AUTO_PER_PROVIDER_LIMIT || !queue.length) continue;
+        limited.push(queue.shift()!);
+        perProvider.set(providerId, used + 1);
+        progressed = true;
+        if (limited.length >= AUTO_CANDIDATE_LIMIT) break;
+      }
     }
     return limited;
+  }
+
+  private shouldCooldown(error: PlatformError) {
+    if (error.code === "model_unavailable") return false;
+    return error.code === "provider_unavailable" || error.code === "rate_limited";
+  }
+
+  private exhaustedCandidatesError(mode: RoutingMode, attempted: string[], lastFailure?: PlatformError) {
+    const detail = attempted.length
+      ? ` Tried ${attempted.join(", ")}.`
+      : "";
+    const tail = lastFailure
+      ? ` Last error: ${lastFailure.message}`
+      : "";
+    const message = mode === "auto" || mode === "free_cloud"
+      ? `No eligible free model could complete this request.${detail}${tail}`
+      : `No available model could complete this request.${detail}${tail}`;
+    return new PlatformError(lastFailure?.code || "provider_unavailable", message, lastFailure?.statusCode || 503);
   }
 
   private async firstText(iterator: AsyncIterator<string>) {

@@ -38,6 +38,14 @@ export class ChatState extends EventTarget {
     this.deepReasoning = (() => {
       try { return localStorage.getItem("ash-chat-deep-reasoning") === "1"; } catch { return false; }
     })();
+    this.workingMode = (() => {
+      try {
+        const stored = localStorage.getItem("ash-chat-working-mode");
+        if (stored === "research" || stored === "deep_analysis" || stored === "coding") return stored;
+        return "auto";
+      } catch { return "auto"; }
+    })();
+    this.latestResearch = [];
   }
 
   update(patch) {

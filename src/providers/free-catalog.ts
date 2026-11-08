@@ -27,7 +27,7 @@ export function inferTaskFromText(content: string): "chat" | "reasoning" | "codi
   if (/\b(code|function|typescript|python|bug|refactor|compile|stack trace)\b/.test(text) || /```/.test(content)) {
     return "coding";
   }
-  if (/\b(reason|prove|step by step|analyse|analyze|why)\b/.test(text)) return "reasoning";
+  if (/\b(reason|prove|step by step|analyse|analyze|why|research|compare|trade-?off)\b/.test(text)) return "reasoning";
   return "chat";
 }
 

@@ -19,6 +19,7 @@ import { errorPayload, PlatformError, sanitizeLogError } from "../errors.ts";
 import { parseMultipart, readRawBody } from "./multipart.ts";
 import { appendCookies, authCookieHeaders, clearAuthCookieHeaders, csrfOk, newCsrfToken, sessionFromRequest } from "./cookies.ts";
 import { tryServeChat } from "./static.ts";
+import { runResearch } from "../research/research-service.ts";
 import { searchWikipedia } from "../research/wikipedia.ts";
 
 const JSON_LIMIT = 64 * 1024;
@@ -350,6 +351,8 @@ export function createPlatformServer(config: PlatformConfig) {
             { id: "search_knowledge", name: "Search project knowledge", execution: "server-side retrieval", approval: "not required" },
             { id: "search_memory", name: "Search approved memory", execution: "server-side retrieval", approval: "not required" },
             { id: "search_wikipedia", name: "Wikipedia reference lookup", execution: "server-side retrieval", approval: "not required" },
+            { id: "research", name: "Modular research (Wikipedia and Instant Answer)", execution: "server-side retrieval", approval: "not required" },
+            { id: "calculator", name: "Deterministic arithmetic", execution: "server-side", approval: "not required" },
           ],
         });
         return;
@@ -357,7 +360,7 @@ export function createPlatformServer(config: PlatformConfig) {
 
       if (method === "GET" && pathname === "/api/v1/research") {
         const query = parsedUrl.searchParams.get("q") || "";
-        sendJson(response, 200, await searchWikipedia(query));
+        sendJson(response, 200, await runResearch(query).catch(async () => searchWikipedia(query)));
         return;
       }
 
@@ -578,7 +581,7 @@ export function createPlatformServer(config: PlatformConfig) {
         }
         if (method === "POST" && hasMessagesSuffix) {
           const body = await readJson(request);
-          allowKeys(body, ["content", "mode", "providerId", "modelId", "attachmentIds", "regenerateFromMessageId", "editMessageId", "webSearch", "responseStyle", "deepReasoning", "continueFromMessageId"]);
+          allowKeys(body, ["content", "mode", "providerId", "modelId", "attachmentIds", "regenerateFromMessageId", "editMessageId", "webSearch", "responseStyle", "deepReasoning", "continueFromMessageId", "workingMode"]);
           if (typeof body.content !== "string") {
             throw new PlatformError("invalid_request", "Message content is required.", 400);
           }
@@ -598,7 +601,7 @@ export function createPlatformServer(config: PlatformConfig) {
           const attachmentIds = Array.isArray(body.attachmentIds)
             ? body.attachmentIds.filter((value): value is string => typeof value === "string")
             : [];
-          const { userMessage, model, stream: assistantStream, suggestedMemories } = await chat.prepareReply(
+          const { userMessage, model, stream: assistantStream, suggestedMemories, workingMode, researchSources } = await chat.prepareReply(
             user.id,
             conversationId,
             body.content,
@@ -614,6 +617,7 @@ export function createPlatformServer(config: PlatformConfig) {
               responseStyle: typeof body.responseStyle === "string" ? body.responseStyle : "normal",
               deepReasoning: body.deepReasoning === true,
               continueFromMessageId: typeof body.continueFromMessageId === "string" ? body.continueFromMessageId : undefined,
+              workingMode: typeof body.workingMode === "string" ? body.workingMode : "auto",
             },
           );
           setHeaders(response);
@@ -630,6 +634,8 @@ export function createPlatformServer(config: PlatformConfig) {
           const sendEvent = (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
           sendEvent("message", { type: "user", id: userMessage.id });
           sendEvent("model", { providerId: model.providerId, modelId: model.id, displayName: model.displayName, locality: model.locality, pricing: model.pricing });
+          if (workingMode) sendEvent("working_mode", { workingMode });
+          if (researchSources.length) sendEvent("research", { sources: researchSources });
           if (suggestedMemories.length) sendEvent("memory_suggestions", { suggestions: suggestedMemories });
           let assistantText = "";
           let finishReason: "stop" | "length" | "content_filter" | "cancelled" | "error" = "stop";
@@ -654,7 +660,7 @@ export function createPlatformServer(config: PlatformConfig) {
               }
             }
             if (assistantText) {
-              const assistantMessage = await chat.saveAssistantReply(user.id, conversationId, assistantText, model, { finishReason });
+              const assistantMessage = await chat.saveAssistantReply(user.id, conversationId, assistantText, model, { finishReason, researchSources });
               const meta = JSON.parse(assistantMessage.metadata || "{}");
               sendEvent("done", {
                 messageId: assistantMessage.id,
@@ -669,7 +675,7 @@ export function createPlatformServer(config: PlatformConfig) {
           } catch (error) {
             const payload = errorPayload(error).body.error;
             if (assistantText) {
-              const assistantMessage = await chat.saveAssistantReply(user.id, conversationId, assistantText, model, { finishReason: "error", truncated: true });
+              const assistantMessage = await chat.saveAssistantReply(user.id, conversationId, assistantText, model, { finishReason: "error", truncated: true, researchSources });
               sendEvent("done", {
                 messageId: assistantMessage.id,
                 complete: false,

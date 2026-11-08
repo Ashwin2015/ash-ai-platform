@@ -7,6 +7,7 @@ const root = document.querySelector("#app");
 const state = new ChatState();
 let authMode = "login";
 let mobileSidebarOpen = false;
+let networkOnline = navigator.onLine !== false;
 let currentRequestId = 0;
 const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({
   "&": "&amp;",
@@ -15,6 +16,22 @@ const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => (
   '"': "&quot;",
   "'": "&#39;",
 })[character]);
+
+function draftKey(conversationId) {
+  return `ash-chat-draft:${conversationId || "new"}`;
+}
+
+function draftFor(conversationId) {
+  try { return sessionStorage.getItem(draftKey(conversationId)) || ""; } catch { return ""; }
+}
+
+function saveDraft(conversationId, value) {
+  try {
+    const key = draftKey(conversationId);
+    if (value) sessionStorage.setItem(key, value);
+    else sessionStorage.removeItem(key);
+  } catch {}
+}
 
 function applyTheme() {
   document.documentElement.dataset.theme = state.theme;
@@ -186,7 +203,7 @@ function renderMessages() {
   const streaming = state.sending
     ? `<article class="message assistant"><div class="message-avatar">A</div><div class="message-body"><div class="message-heading">ASH <span>AI</span></div>${state.actualModel ? `<div class="message-model">${escapeHtml(modelLabel(state.actualModel))}</div>` : ""}${state.streamingText
       ? `<div class="markdown">${renderMarkdown(state.streamingText)}</div>`
-      : `<div class="thinking"><i></i><i></i><i></i><span>Thinking</span></div>`}</div></article>`
+      : `<div class="thinking"><i></i><i></i><i></i><span>Thinking</span></div>`}${state.latestResearch?.length ? `<div class="source-list">${state.latestResearch.map((source) => `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title || source.url)}</a>`).join("")}</div>` : ""}</div></article>`
     : "";
   return `<div class="message-list" id="message-list">${messages}${streaming}<div id="messages-end"></div></div>`;
 }
@@ -222,6 +239,7 @@ function renderMessage(message) {
       ${usedModel ? `<div class="message-model">${escapeHtml(usedModel)}</div>` : ""}
       ${assistant && meta.filtered ? `<div class="incomplete-note">This reply was stopped by the model's safety filter. It is not continued automatically.</div>` : ""}
       ${assistant && meta.truncated && !meta.filtered ? `<div class="incomplete-note">This reply stopped before it finished. Use Continue to complete it without repeating earlier sections.</div>` : ""}
+      ${assistant && Array.isArray(meta.research) && meta.research.length ? `<div class="source-list">${meta.research.map((source) => `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title || source.url)}</a>`).join("")}</div>` : ""}
       <div class="markdown">${renderMarkdown(message.content)}</div>
     </div>
   </article>`;
@@ -264,20 +282,27 @@ function renderApp() {
           </div>
         </header>
         <div class="model-detail">${selectedModel ? `<span class="local-badge">${selectedModel.locality === "local" ? "LOCAL" : "CLOUD"}</span>${state.selectedMode === "manual" ? "" : `${state.selectedMode.replace("_", " ").toUpperCase()} · `}${escapeHtml(selectedModel.providerId)} · ${escapeHtml(selectedModel.displayName)} <span class="detail-separator">·</span> ${escapeHtml(modelDetails(selectedModel))}` : state.selectedMode === "auto" ? "AUTO — FREE FIRST · paid models are excluded" : state.selectedMode === "free_cloud" ? "FREE CLOUD · uses verified free cloud models only" : state.selectedMode === "local_only" ? "LOCAL ONLY · prompts stay on this computer" : escapeHtml(state.health?.providers?.ollama?.message || "Waiting for a model")}</div>
+        ${networkOnline ? "" : `<div class="offline-banner" role="status">You are offline. Cloud AI needs a connection to the hosted ASH backend. Your unsent message stays in this box. Send again when you are back online.</div>`}
         ${state.error ? `<div class="error-banner" role="alert"><span>!</span>${escapeHtml(state.error)}<button data-action="dismiss-error" type="button" aria-label="Dismiss error">×</button></div>` : ""}
         ${state.memorySuggestions.length ? `<div class="memory-banner">Suggested memory: ${state.memorySuggestions.map((item) => `<button data-action="save-suggestion" data-text="${escapeHtml(item)}" type="button">${escapeHtml(item)}</button>`).join("")}</div>` : ""}
         <section class="conversation-area" aria-live="polite">${renderMessages()}</section>
         <footer class="composer-area">
           <div class="attachment-row">${state.pendingAttachments.map((item, index) => `<span class="attachment-chip">${escapeHtml(item.fileName)}<button data-action="remove-attachment" data-index="${index}" type="button">×</button></span>`).join("")}</div>
           <form id="composer" class="composer">
-            <label class="attach-button">＋<input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.pdf,.jpg,.jpeg,.png,.webp" capture="environment" hidden></label>
+            <label class="attach-button">＋<input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.pdf,.jpg,.jpeg,.png,.webp" hidden></label>
             <button class="attach-button" data-action="voice" type="button" aria-label="Voice input">🎙</button>
-            <textarea name="message" rows="1" maxlength="8000" placeholder="Message ASH Chat…" aria-label="Message" ${state.sending ? "disabled" : ""}></textarea>
+            <textarea name="message" rows="1" maxlength="8000" placeholder="Message ASH Chat…" aria-label="Message" ${state.sending ? "disabled" : ""}>${escapeHtml(draftFor(state.activeConversationId))}</textarea>
             ${state.sending
               ? `<button class="stop-button" data-action="stop" type="button" aria-label="Stop generation"><span>■</span></button>`
               : `<button class="send-button" type="submit" aria-label="Send message"><span>↑</span></button>`}
           </form>
           <div class="composer-tools">
+            <label>Mode <select id="working-mode">
+              <option value="auto" ${state.workingMode === "auto" ? "selected" : ""}>Auto</option>
+              <option value="research" ${state.workingMode === "research" ? "selected" : ""}>Research</option>
+              <option value="deep_analysis" ${state.workingMode === "deep_analysis" ? "selected" : ""}>Deep analysis</option>
+              <option value="coding" ${state.workingMode === "coding" ? "selected" : ""}>Coding</option>
+            </select></label>
             <label>Length <select id="response-style">
               <option value="short" ${state.responseStyle === "short" ? "selected" : ""}>Short</option>
               <option value="normal" ${state.responseStyle === "normal" ? "selected" : ""}>Normal</option>
@@ -285,9 +310,9 @@ function renderApp() {
               <option value="deep_analysis" ${state.responseStyle === "deep_analysis" ? "selected" : ""}>Deep analysis</option>
             </select></label>
             <label><input id="deep-reasoning" type="checkbox" ${state.deepReasoning ? "checked" : ""}> Deep reasoning</label>
-            <label><input id="web-search" type="checkbox"> Wikipedia lookup</label>
+            <label><input id="web-search" type="checkbox"> Force sources</label>
           </div>
-          <div class="composer-hint"><span>Enter to send <kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line</span><span>Deep reasoning adds a short reasoning summary, not hidden chain-of-thought.</span></div>
+          <div class="composer-hint"><span>Enter to send <kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line</span><span>Auto picks approach. Research uses Wikipedia and Instant Answer sources, not a paid web crawl.</span></div>
         </footer>
       </section>
     </main>`;
@@ -365,6 +390,11 @@ function bindAppEvents() {
     const file = event.currentTarget.files?.[0];
     if (file) void uploadFile(file);
   });
+  root.querySelector("#working-mode")?.addEventListener("change", (event) => {
+    const value = event.currentTarget.value;
+    state.workingMode = value === "research" || value === "deep_analysis" || value === "coding" ? value : "auto";
+    try { localStorage.setItem("ash-chat-working-mode", state.workingMode); } catch {}
+  });
   root.querySelector("#response-style")?.addEventListener("change", (event) => {
     const value = event.currentTarget.value;
     state.responseStyle = value === "short" || value === "detailed" || value === "deep_analysis" ? value : "normal";
@@ -377,6 +407,7 @@ function bindAppEvents() {
   root.querySelector("#composer")?.addEventListener("submit", (event) => { void sendMessage(event); });
   const textarea = root.querySelector("#composer textarea");
   textarea?.addEventListener("input", () => {
+    saveDraft(state.activeConversationId, textarea.value);
     textarea.style.height = "auto";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
   });
@@ -392,6 +423,17 @@ async function loadMemories() {
   const result = await api.memories();
   state.memories = result.memories || [];
   renderApp();
+}
+
+function recoverExpiredSession(message = "Your session expired. Please sign in again.") {
+  try { clearSessionToken(); } catch {}
+  state.user = null;
+  state.sending = false;
+  state.controller = null;
+  authMode = "login";
+  renderLogin();
+  const errorNode = root.querySelector("#auth-error");
+  if (errorNode) { errorNode.textContent = message; errorNode.hidden = false; }
 }
 
 async function loadApplication() {
@@ -423,13 +465,7 @@ async function loadApplication() {
     renderApp();
   } catch (error) {
     if (error.status === 401) {
-      try { clearSessionToken(); } catch {}
-      state.user = null;
-      state.update({ loading: false, error: "Your session expired. Please sign in again." });
-      authMode = "login";
-      renderLogin();
-      const errorNode = root.querySelector("#auth-error");
-      if (errorNode) { errorNode.textContent = state.error; errorNode.hidden = false; }
+      recoverExpiredSession();
       return;
     }
     state.update({ loading: false, error: error.message || "The platform could not load your account." });
@@ -556,8 +592,14 @@ async function sendMessage(event, overrides = {}) {
   const textarea = root.querySelector("#composer textarea");
   const content = overrides.content || textarea?.value.trim();
   const webSearch = Boolean(root.querySelector("#web-search")?.checked);
+  state.latestResearch = [];
   const selected = activeModel();
   if (!content || (state.selectedMode === "manual" && !selected) || state.sending) return;
+  if (!networkOnline) {
+    saveDraft(state.activeConversationId, content);
+    state.update({ error: "You are offline. This message was kept in the composer. Send it again when the connection returns." });
+    return;
+  }
   const requestId = ++currentRequestId;
   state.stop();
   state.error = "";
@@ -581,7 +623,7 @@ async function sendMessage(event, overrides = {}) {
       temporaryUserMessage = { id: `pending-${Date.now()}`, role: "user", content, createdAt: Date.now() };
       state.messages = [...state.messages, temporaryUserMessage];
     }
-    if (textarea && !overrides.content) { textarea.value = ""; textarea.style.height = "auto"; }
+    if (textarea && !overrides.content) { textarea.value = ""; textarea.style.height = "auto"; saveDraft(conversationId, ""); }
     const attachmentIds = state.pendingAttachments.map((item) => item.id);
     state.pendingAttachments = [];
     renderApp();
@@ -599,6 +641,7 @@ async function sendMessage(event, overrides = {}) {
       webSearch,
       responseStyle: state.responseStyle,
       deepReasoning: state.deepReasoning,
+      workingMode: state.workingMode,
     }, {
       signal: controller.signal,
       onToken: (token) => {
@@ -617,6 +660,10 @@ async function sendMessage(event, overrides = {}) {
           state.update({});
         }
         if (type === "memory_suggestions") state.memorySuggestions = data.suggestions || [];
+        if (type === "research") {
+          state.latestResearch = data.sources || [];
+          state.update({});
+        }
       },
     });
     if (requestId !== currentRequestId) return;
@@ -641,6 +688,10 @@ async function sendMessage(event, overrides = {}) {
       }
     } else if (temporaryUserMessage) {
       state.messages = state.messages.filter((message) => message !== temporaryUserMessage);
+    }
+    if (error.status === 401) {
+      recoverExpiredSession();
+      return;
     }
     if (!aborted) {
       if (createdConversation && !temporaryUserMessage && conversationId) {
@@ -677,9 +728,25 @@ state.addEventListener("stream", () => {
 
 async function boot() {
   applyTheme();
+  const viewport = window.visualViewport;
+  if (viewport) {
+    const applyKeyboardInset = () => {
+      const inset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+      document.documentElement.style.setProperty("--keyboard-inset", `${inset}px`);
+    };
+    viewport.addEventListener("resize", applyKeyboardInset);
+    viewport.addEventListener("scroll", applyKeyboardInset);
+    applyKeyboardInset();
+  }
   if ("serviceWorker" in navigator) {
     try { await navigator.serviceWorker.register("/sw.js"); } catch {}
   }
+  const showNetwork = () => {
+    networkOnline = navigator.onLine !== false;
+    if (getSessionToken() && state.user) renderApp();
+  };
+  window.addEventListener("online", showNetwork);
+  window.addEventListener("offline", showNetwork);
   if (!getSessionToken()) {
     renderLogin();
     try {
@@ -692,9 +759,10 @@ async function boot() {
   try {
     const me = await api.me();
     state.user = me.user || { email: "Signed-in account" };
-  } catch {
-    clearSessionToken();
-    renderLogin();
+  } catch (error) {
+    recoverExpiredSession(error.status === 401
+      ? "Your session expired. Please sign in again."
+      : "The saved session could not be verified. Please sign in again.");
     return;
   }
   await loadApplication();

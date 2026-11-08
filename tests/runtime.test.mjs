@@ -151,7 +151,7 @@ test("AUTO tries at most two models per provider", async () => {
   const runtime = runtimeFor(gemini, groq);
   const result = await runtime.prepare("auto", "", "", [{ role: "user", content: "Hi" }]);
   assert.equal(result.model.id, "llama");
-  assert.deepEqual(calls, ["flash-a", "flash-b", "llama"]);
+  assert.deepEqual(calls, ["flash-a", "llama"]);
 });
 
 test("manual selection is not overridden by AUTO scoring", async () => {

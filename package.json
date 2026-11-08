@@ -13,9 +13,11 @@
     "lan-https": "node scripts/lan-https-proxy.mjs",
     "backup": "node scripts/backup.mjs",
     "apply:supabase": "node --experimental-strip-types scripts/apply-supabase-setup.mjs",
-    "test": "node --experimental-strip-types --test tests/platform.test.mjs tests/runtime.test.mjs tests/stage3.test.mjs tests/hosting.test.mjs tests/storage-paths.test.mjs tests/postgres-auth.test.mjs tests/chat-intelligence.test.mjs apps/ash-chat/tests/frontend.test.mjs",
+    "test": "node --experimental-strip-types --test tests/platform.test.mjs tests/runtime.test.mjs tests/provider-resilience.test.mjs tests/stage3.test.mjs tests/hosting.test.mjs tests/storage-paths.test.mjs tests/postgres-auth.test.mjs tests/chat-intelligence.test.mjs tests/evaluation.test.mjs apps/ash-chat/tests/frontend.test.mjs",
     "test:live": "node --experimental-strip-types --test tests/live-inference.test.mjs",
-    "check": "node scripts/check-typescript.mjs && node --check tests/platform.test.mjs && node --check tests/runtime.test.mjs && node --check tests/stage3.test.mjs && node --check tests/hosting.test.mjs && node --check tests/storage-paths.test.mjs && node --check tests/chat-intelligence.test.mjs && node --check tests/live-inference.test.mjs && node --check scripts/apply-supabase-setup.mjs && node --check apps/ash-chat/scripts/dev-server.mjs && node --check apps/ash-chat/src/api-client.js && node --check apps/ash-chat/src/auth.js && node --check apps/ash-chat/src/chat-state.js && node --check apps/ash-chat/src/markdown.js && node --check apps/ash-chat/src/app.js && node --check apps/ash-chat/runtime-config.js"
+    "test:live:quality": "node --experimental-strip-types --test tests/live-quality.test.mjs",
+    "test:readiness": "node --experimental-strip-types scripts/internal-readiness-run.mjs",
+    "check": "node scripts/check-typescript.mjs && node --check tests/platform.test.mjs && node --check tests/runtime.test.mjs && node --check tests/provider-resilience.test.mjs && node --check tests/live-quality.test.mjs && node --check tests/stage3.test.mjs && node --check tests/hosting.test.mjs && node --check tests/storage-paths.test.mjs && node --check tests/chat-intelligence.test.mjs && node --check tests/evaluation.test.mjs && node --check tests/live-inference.test.mjs && node --check scripts/internal-readiness-run.mjs && node --check scripts/apply-supabase-setup.mjs && node --check apps/ash-chat/scripts/dev-server.mjs && node --check apps/ash-chat/src/api-client.js && node --check apps/ash-chat/src/auth.js && node --check apps/ash-chat/src/chat-state.js && node --check apps/ash-chat/src/markdown.js && node --check apps/ash-chat/src/app.js && node --check apps/ash-chat/runtime-config.js"
   },
   "dependencies": {
     "pdfjs-dist": "^4.10.38",

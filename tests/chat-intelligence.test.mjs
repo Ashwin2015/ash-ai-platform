@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createPlatformServer } from "../src/http/server.ts";
 import { assistantSystemPrompt, capGeneration, classifyFinish, CONTINUE_INSTRUCTION, generationLimits, looksTruncated, normalizeResponseStyle } from "../src/chat/assistant-prompt.ts";
+import { classifyQuestionComplexity, inferWorkingMode, selectRelevantText, shouldAutoResearch } from "../src/chat/working-mode.ts";
 import { inferTaskFromText, scoreModelForTask } from "../src/providers/free-catalog.ts";
+import { formatResearchContext, runResearch } from "../src/research/research-service.ts";
+import { extractCalculations } from "../src/tools/calculator.ts";
 import { renderMarkdown } from "../apps/ash-chat/src/markdown.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -77,6 +80,43 @@ test("response styles, reasoning prompt, and task scoring [unit]", () => {
   const reasoner = { id: "deepseek-r1", locality: "cloud", pricing: "limited_free", capabilities: { imageInput: false } };
   const chatty = { id: "llama-chat", locality: "cloud", pricing: "limited_free", capabilities: { imageInput: false } };
   assert.ok(scoreModelForTask(reasoner, "reasoning") > scoreModelForTask(chatty, "reasoning"));
+  assert.equal(inferWorkingMode("hello"), "auto");
+  assert.equal(inferWorkingMode("debug this stack trace"), "coding");
+  assert.equal(inferWorkingMode("Research the latest market share", "auto"), "research");
+  assert.equal(inferWorkingMode("anything", "coding"), "coding");
+  assert.equal(shouldAutoResearch("What is 2+2?", "auto"), false);
+  assert.equal(shouldAutoResearch("What is photosynthesis?", "auto"), false);
+  assert.equal(shouldAutoResearch("latest news about NASA", "auto"), true);
+  assert.equal(shouldAutoResearch("explain rust", "research"), true);
+  assert.equal(shouldAutoResearch("latest news", "auto", false), true);
+  assert.equal(shouldAutoResearch("do not search the latest news", "auto"), false);
+  assert.equal(classifyQuestionComplexity("What is HTML?"), "simple");
+  assert.equal(classifyQuestionComplexity("1. Market\n2. Costs\n3. Risks\n4. Plan"), "complex");
+  const memories = selectRelevantText([{ content: "My name is Ashwin" }, { content: "I prefer dark mode" }], "What is my name?");
+  assert.ok(memories.some((item) => /Ashwin/.test(item)));
+  assert.doesNotMatch(memories.join(" "), /dark mode/);
+  const calc = extractCalculations("240,000 customers × ₹199 per month");
+  assert.ok(calc.some((item) => item.result === 47_760_000));
+  assert.ok(calc.some((item) => item.result === 573_120_000));
+  const prompt = assistantSystemPrompt({ style: "normal", deepReasoning: false, workingMode: "research" });
+  assert.match(prompt, /Working mode: RESEARCH/);
+  assert.match(prompt, /Never present an estimate as a verified fact/);
+});
+
+test("modular research uses injected providers and does not invent sources", async () => {
+  const result = await runResearch("What is ASH?", undefined, [
+    {
+      id: "stub",
+      search: async () => [{ title: "ASH", url: "https://example.test/ash", snippet: "Example note", domain: "example.test", provider: "stub" }],
+    },
+  ]);
+  assert.equal(result.sources[0].url, "https://example.test/ash");
+  assert.match(formatResearchContext(result), /https:\/\/example\.test\/ash/);
+  const empty = await runResearch("nothing", undefined, [{ id: "empty", search: async () => [] }]);
+  assert.equal(empty.sources.length, 0);
+  assert.match(formatResearchContext(empty), /Do not invent/);
+  const failed = await runResearch("fail", undefined, [{ id: "down", search: async () => { throw new Error("down"); } }]);
+  assert.match(failed.note, /unavailable|invent/i);
 });
 
 test("markdown renderer supports tables and keeps HTML escaped", () => {
@@ -284,6 +324,33 @@ test("conversation context, regenerate, styles, fallback, and isolation [mock pr
   const manualModel = manualEvents.find((event) => event.type === "model");
   assert.equal(manualModel.data.providerId, "gemini");
   assert.equal(manualModel.data.modelId, "gemini-2.0-flash");
+
+  const coding = await fetch(`${apiUrl}/api/v1/chat/conversations/${conversationId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${ownerToken}` },
+    body: JSON.stringify({
+      content: "Write a typescript function add(a, b).",
+      mode: "auto",
+      workingMode: "coding",
+      responseStyle: "detailed",
+    }),
+  });
+  assert.equal(coding.status, 200);
+  await readSse(coding);
+  assert.match(JSON.stringify(groqBodies.at(-1).messages), /Working mode: CODING/);
+  const revenue = await fetch(`${apiUrl}/api/v1/chat/conversations/${conversationId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${ownerToken}` },
+    body: JSON.stringify({
+      content: "If 240,000 customers × ₹199 per month, what is annual revenue?",
+      mode: "auto",
+      workingMode: "auto",
+      webSearch: false,
+    }),
+  });
+  assert.equal(revenue.status, 200);
+  await readSse(revenue);
+  assert.match(JSON.stringify(groqBodies.at(-1).messages), /573120000|573,120,000/);
   assert.ok(manualEvents.some((event) => event.data?.text === "GEMINI_OK"));
   const firstDone = firstEvents.find((event) => event.type === "done");
   assert.equal(firstDone.data.complete, true);
