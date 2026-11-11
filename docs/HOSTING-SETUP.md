@@ -1,6 +1,6 @@
 # ASH AI hosting setup
 
-Do not deploy until SQL has been applied in Supabase.
+The hosted service is already running. Do not re-apply these SQL files against the live database unless you are adding a new migration. They are additive, but a second manual run is not a routine step.
 
 Dedicated project: **ASH AI Production**, id `pqrzjwynarkbadzbpuvw`, Europe (Paris), free. Public API URL: `https://pqrzjwynarkbadzbpuvw.supabase.co`
 
@@ -11,6 +11,7 @@ In the Supabase SQL editor, run these files **in order**. They are idempotent (`
 1. `supabase/migrations/20261101_001_init.sql` — tables, indexes, ownership foreign keys  
 2. `supabase/migrations/20261101_002_rls.sql` — RLS deny + revoke from `anon`/`authenticated`  
 3. `supabase/migrations/20261101_003_storage.sql` — private bucket `ash-private-files`  
+4. `supabase/migrations/20261102_004_owner.sql` — `users.is_owner`  
 
 Or set `DATABASE_URL` (session pooler) in your shell only, then:
 
@@ -38,8 +39,8 @@ Set as secrets:
 - `ASH_PLATFORM_PUBLIC_ORIGIN`
 - `DATABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `ASH_PLATFORM_BOOTSTRAP_KEY` (unused by registration; safe to leave set)
-- `ASH_PLATFORM_INVITE_CODE` (unused by registration; safe to leave set)
+- `ASH_PLATFORM_BOOTSTRAP_KEY` (unused by the server; safe to leave set)
+- `ASH_PLATFORM_INVITE_CODE` (required for new registration when non-empty; existing accounts still sign in without it)
 - `GEMINI_API_KEY`
 - `GROQ_API_KEY`
 - `OPENROUTER_API_KEY`
@@ -48,4 +49,6 @@ Leave `ASH_CHAT_PUBLIC_ORIGIN` empty. Never put the service role or API keys in 
 
 ## Backup
 
-Local: `npm.cmd run backup` copies SQLite under `.data/backups/`. Hosted: use Supabase dashboard backups / point-in-time if your plan includes it. Account export: `GET /api/v1/account/export` while signed in.
+Local: `npm.cmd run backup` writes the SQLite file plus any `-wal` and `-shm` companions under `.data/backups/`. The 8 Nov snapshot is empty of accounts. It is not a copy of the hosted database.
+
+Hosted accounts are in Supabase project `pqrzjwynarkbadzbpuvw`. The free plan does not provide a scheduled backup. This machine has no `DATABASE_URL`, so no production dump was taken. After approval, dump with `pg_dump` and restore into a new database only. See `docs/ASH-SECURITY-AND-RECOVERY.md`. Account export (`GET /api/v1/account/export`) is one signed-in account, not a full database backup.

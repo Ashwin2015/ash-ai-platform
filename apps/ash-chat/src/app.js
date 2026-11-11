@@ -4,7 +4,7 @@ import { clearSessionToken, getSessionToken, saveSessionToken } from "./auth.js"
 import { ChatState } from "./chat-state.js";
 import { renderMarkdown } from "./markdown.js";
 import { beginSend, classifySendFailure, reconnectNotice } from "./send-guard.js";
-import { speechRecognitionConstructor, transcriptFromEvent, voiceErrorMessage } from "./voice.js";
+import { speakableText, speechRecognitionConstructor, speechSynthesisAvailable, transcriptFromEvent, voiceErrorMessage } from "./voice.js";
 
 const root = document.querySelector("#app");
 const state = new ChatState();
@@ -303,6 +303,7 @@ function renderMessage(message) {
     <div class="message-body">
       <div class="message-heading">${assistant ? "ASH <span>AI</span>" : "You"}<time>${formatTime(message.createdAt)}</time>
       ${assistant && message.content ? `<button class="copy-button" data-action="copy" data-id="${escapeHtml(message.id)}" type="button">Copy</button>` : ""}
+      ${assistant && message.content && speechSynthesisAvailable() ? `<button class="copy-button" data-action="speak" data-id="${escapeHtml(message.id)}" type="button">Speak</button>` : ""}
       ${assistant ? `<button class="copy-button" data-action="regenerate" data-id="${escapeHtml(message.id)}" type="button">Regenerate</button>` : `<button class="copy-button" data-action="edit-resend" data-id="${escapeHtml(message.id)}" type="button">Edit</button>`}
       ${assistant && meta.truncated && !meta.filtered ? `<button class="copy-button" data-action="continue" data-id="${escapeHtml(message.id)}" type="button">Continue</button>` : ""}</div>
       ${usedModel ? `<div class="message-model">${escapeHtml(usedModel)}</div>` : ""}
@@ -339,7 +340,7 @@ function renderApp() {
             <button class="icon-button" data-action="toggle-theme" type="button" aria-label="Toggle theme">${state.theme === "dark" ? "☀" : "☾"}</button>
             <button class="icon-button" data-action="logout" type="button" aria-label="Log out" title="Log out">↪</button></div>
           <div class="privacy-note"><span class="status-dot ${ollamaOnline ? "online" : ""}"></span>${escapeHtml(providerStatus())}</div>
-          <div class="account-actions"><button class="text-button" data-action="export-account" type="button">Export data</button><button class="text-button" data-action="delete-account" type="button">Delete account</button></div>
+          <div class="account-actions"><a class="text-button" href="/download.html">Android download</a><button class="text-button" data-action="export-account" type="button">Export data</button><button class="text-button" data-action="delete-account" type="button">Delete account</button></div>
         </div>
       </aside>
       <section class="chat-pane">
@@ -417,6 +418,7 @@ function bindAppEvents() {
       if (action === "open-sidebar") { mobileSidebarOpen = true; renderApp(); }
       if (action === "close-sidebar") { mobileSidebarOpen = false; renderApp(); }
       if (action === "copy") void copyMessage(id, element);
+      if (action === "speak") speakMessage(id);
       if (action === "regenerate") {
         const lastUser = [...state.messages].reverse().find((message) => message.role === "user");
         void sendMessage(null, { regenerateFromMessageId: id, content: lastUser?.content || ".", skipUserBubble: true });
@@ -867,6 +869,16 @@ async function sendMessage(event, overrides = {}) {
   } finally {
     sendInFlight = false;
   }
+}
+
+function speakMessage(id) {
+  const message = state.messages.find((item) => item.id === id);
+  const text = speakableText(message?.content || "");
+  if (!text || !speechSynthesisAvailable()) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = navigator.language || "en";
+  window.speechSynthesis.speak(utterance);
 }
 
 async function copyMessage(id, button) {

@@ -1,5 +1,19 @@
 /** Browser speech-to-text helpers. Chrome on Android uses an online recognizer. */
 
+export function speechSynthesisAvailable(root = globalThis) {
+  return typeof root.speechSynthesis?.speak === "function";
+}
+
+export function speakableText(text, limit = 2_000) {
+  const plain = String(text || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[#>*_`[\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!plain) return "";
+  return plain.length > limit ? `${plain.slice(0, limit)}…` : plain;
+}
+
 export function speechRecognitionConstructor(root = globalThis) {
   return root.SpeechRecognition || root.webkitSpeechRecognition || null;
 }

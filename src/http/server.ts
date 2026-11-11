@@ -21,33 +21,11 @@ import { appendCookies, authCookieHeaders, clearAuthCookieHeaders, csrfOk, newCs
 import { tryServeChat } from "./static.ts";
 import { runResearch } from "../research/research-service.ts";
 import { searchWikipedia } from "../research/wikipedia.ts";
+import { SlidingWindowLimiter } from "../../packages/ash-ai-core/src/reliability/rate-limit.ts";
 
 const JSON_LIMIT = 64 * 1024;
-const AUTH_RATE_WINDOW_MS = 60_000;
-const AUTH_RATE_LIMIT = 30;
 
 type JsonObject = Record<string, unknown>;
-
-class RequestRateLimiter {
-  private readonly attempts = new Map<string, { startedAt: number; count: number }>();
-
-  allow(key: string, now: number) {
-    for (const [candidate, item] of this.attempts) {
-      if (now - item.startedAt >= AUTH_RATE_WINDOW_MS) this.attempts.delete(candidate);
-    }
-    if (this.attempts.size > 1_000) {
-      const oldest = this.attempts.keys().next().value as string | undefined;
-      if (oldest) this.attempts.delete(oldest);
-    }
-    const item = this.attempts.get(key);
-    if (!item || now - item.startedAt >= AUTH_RATE_WINDOW_MS) {
-      this.attempts.set(key, { startedAt: now, count: 1 });
-      return true;
-    }
-    item.count += 1;
-    return item.count <= AUTH_RATE_LIMIT;
-  }
-}
 
 function isLoopbackHostname(hostname: string) {
   return ["localhost", "127.0.0.1", "::1"].includes(hostname.replace(/^\[|\]$/g, "").toLowerCase());
@@ -196,7 +174,8 @@ export function createPlatformServer(config: PlatformConfig) {
   const memories = new MemoryService(database);
   const knowledge = new KnowledgeService(database, embeddings);
   const chat = new ChatService(database, runtime, Date.now, { files, memories, knowledge });
-  const rateLimiter = new RequestRateLimiter();
+  const authLimiter = new SlidingWindowLimiter(30, 60_000);
+  const chatLimiter = new SlidingWindowLimiter(40, 60_000);
   const geminiStatus = new GeminiProvider(config.geminiApiKey || "", config.geminiBaseUrl);
   const groqStatus = new OpenAICompatibleProvider("groq", "Groq", config.groqApiKey || "", config.groqBaseUrl || "https://api.groq.com/openai/v1");
   const openrouterStatus = new OpenAICompatibleProvider("openrouter", "OpenRouter", config.openrouterApiKey || "", config.openrouterBaseUrl || "https://openrouter.ai/api/v1");
@@ -270,7 +249,7 @@ export function createPlatformServer(config: PlatformConfig) {
 
       if (pathname.startsWith("/api/v1/auth/")) {
         const client = request.socket.remoteAddress || "unknown";
-        if (!rateLimiter.allow(client, Date.now())) {
+        if (!authLimiter.allow(client, Date.now())) {
           throw new PlatformError("rate_limited", "Too many authentication attempts. Try again shortly.", 429);
         }
       }
@@ -328,6 +307,9 @@ export function createPlatformServer(config: PlatformConfig) {
       }
 
       const user = await getUser(auth, request);
+      if (method === "POST" && /\/messages$/.test(pathname) && !chatLimiter.allow(`chat:${user.id}`, Date.now())) {
+        throw new PlatformError("rate_limited", "Too many messages. Wait a minute and try again.", 429);
+      }
 
       if (method === "GET" && pathname === "/api/v1/account/export") {
         sendJson(response, 200, { export: await auth.exportAccount(user.id), exportedAt: Date.now() });

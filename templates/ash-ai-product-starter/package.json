@@ -1,0 +1,13 @@
+{
+  "name": "ash-ai-product-starter",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.13.0 <25"
+  },
+  "scripts": {
+    "example": "node src/example.mjs",
+    "test": "node --test test/starter.test.mjs"
+  }
+}

@@ -17,16 +17,17 @@ src/
   runtime/chat-runtime.ts   # capability validation and provider selection
   chat/chat-service.ts      # user-scoped conversation and message operations
   agents/                   # reserved; no agent execution
-  tools/                    # reserved; no tool execution
-  memory/                   # reserved; no separate memory feature
-  knowledge/                # reserved; no indexing or RAG
-  multimodal/               # reserved; text chat only
+  tools/calculator.ts       # deterministic arithmetic injected before the model
+  memory/                   # personal and project memories; only approved text is sent to the model
+  knowledge/                # chunking and retrieval for extracted upload text
+  multimodal/documents.ts   # JPEG, PNG, WebP, and PDF extraction
+  research/                 # Wikipedia and DuckDuckGo instant answers
   training/                 # reserved; no data collection or training
 ```
 
-The future application boundary is the versioned API. Future TypeScript SDKs should depend on public API contracts, not server internals or another application's source tree. ASH IDE and the existing ASH AI mobile prototype are deliberately not runtime dependencies of this project.
+The future application boundary is the versioned API. Future TypeScript SDKs should depend on public API contracts, not server internals or another application's source tree. ASH IDE and the old ASH AI mobile prototype are not runtime dependencies of this project.
 
-`apps/ash-chat/` is a static, dependency-free browser client. A local-only Node development server serves its files and proxies `/api/v1` to the existing platform backend; it validates the browser origin and forwards only the authenticated API request. This keeps the browser same-origin with the API without adding CORS or changing the backend contract. The client stores only the short-lived bearer token in tab-scoped session storage. No third-party font or script is loaded.
+`apps/ash-chat/` is a static, dependency-free browser client. The platform process serves it when `ASH_PLATFORM_SERVE_CHAT` is on. An optional `dev:chat` server can still proxy `/api/v1`. The browser keeps the bearer token and CSRF token in `localStorage`. Cookie requests are checked for CSRF. No third-party font or script is loaded. The service worker caches the app shell only. It does not cache `/api/` responses, tokens, or conversations.
 
 ## Data model
 
@@ -43,11 +44,12 @@ Foreign keys cascade on user/conversation deletion. Database files and WAL files
 
 - Listener and configured Ollama target are restricted to loopback.
 - Browser `Origin` and request `Host` are checked; no CORS headers are enabled.
-- Account registration is email and password only; the first insert atomically becomes owner via a unique partial index. Authentication attempts are rate-limited per peer address.
-- Passwords use scrypt, access tokens are random and stored hashed, and authorization is checked before user-scoped database operations.
-- JSON request bodies are size bounded; API paths and request bodies are not logged.
+- Account registration is email and password. When `ASH_PLATFORM_INVITE_CODE` is non-empty, registration rejects a missing or wrong code before creating a user. Login does not ask for the code. The first insert atomically becomes owner via a unique partial index. Owner is not an admin role and cannot read another account.
+- Authentication attempts are rate-limited in memory, per process and peer address. Chat requests are not rate-limited.
+- Passwords use scrypt. Access tokens are random and stored as SHA-256 hashes. User-scoped queries include `user_id`.
+- JSON request bodies are size bounded. Request logs record method, path, status, and duration. They do not record bodies or tokens.
 
-These controls are a starting point only. In-memory rate limiting is process-local; there is no MFA, CSRF/token lifecycle interface, abuse monitoring, key rotation UI, encryption at rest, or external security review. Account export and deletion exist. A loopback service is intended for its local user, not as a multi-tenant deployment. Do not expose it to other devices or the internet.
+These controls are a starting point only. There is no MFA, no team workspace, no shared project role, no abuse monitoring, no key-rotation UI, and no external security review. Account export and deletion exist. Hosted mode is one Node process on Render with Postgres and private Supabase storage. It is suitable for a small invited preview, not for a public multi-tenant launch.
 
 ## Current modules
 
@@ -56,8 +58,8 @@ These controls are a starting point only. In-memory rate limiting is process-loc
 3. **Memory:** pending/approved personal and project memories; conversation history is separate.
 4. **Knowledge/RAG:** upload ingestion, chunking, local embeddings or lexical fallback, project-scoped retrieval with page references.
 5. **Multimodal:** JPEG/PNG/WebP and PDF uploads, PDF text extraction, optional OCR.
-6. **Tools:** read-only knowledge and memory retrieval during chat. No shell or browser tools.
+6. **Tools:** knowledge retrieval, approved memory, calculator, and the research lookup run on the server before the model answers. The model is not given a tool-calling loop, shell, or browser.
 7. **Training:** still disabled.
-8. **Other clients:** not integrated in this iteration.
+8. **Other clients:** not integrated. Android access is the installable PWA, not an APK.
 
 Each stage should add migration and cross-user isolation tests before expanding the security claims.

@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { beginAttachment, classifyLocalFile, markFailed, markReady, messageContentForSend, readyAttachmentIds, removeAttachment, sendBlockReason } from "../src/attachments.js";
 import { beginSend, classifySendFailure, reconnectNotice } from "../src/send-guard.js";
-import { speechRecognitionConstructor, transcriptFromEvent, voiceErrorMessage } from "../src/voice.js";
+import { speakableText, speechRecognitionConstructor, speechSynthesisAvailable, transcriptFromEvent, voiceErrorMessage } from "../src/voice.js";
 
 test("voice errors distinguish permission, unsupported browsers, and a successful transcript", () => {
+  assert.equal(speechSynthesisAvailable({}), false);
+  assert.equal(speechSynthesisAvailable({ speechSynthesis: { speak() {} } }), true);
+  assert.equal(speakableText("## Hello\n\n```js\nsecret()\n```\n\nWorld"), "Hello World");
   assert.equal(speechRecognitionConstructor({}), null);
   assert.match(voiceErrorMessage("not-allowed"), /Microphone permission was denied/);
   assert.match(voiceErrorMessage("service-not-allowed"), /Microphone permission was denied/);

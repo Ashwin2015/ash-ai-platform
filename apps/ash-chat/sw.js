@@ -1,4 +1,4 @@
-const CACHE = "ash-chat-static-v4";
+const CACHE = "ash-chat-static-v5";
 const STATIC_PATHS = ["/", "/index.html", "/styles.css", "/favicon.svg", "/icon-192.png", "/icon-512.png", "/manifest.webmanifest", "/offline.html", "/src/app.js", "/src/api-client.js", "/src/auth.js", "/src/chat-state.js", "/src/markdown.js", "/src/voice.js", "/src/attachments.js", "/src/send-guard.js", "/runtime-config.js"];
 
 self.addEventListener("install", (event) => {

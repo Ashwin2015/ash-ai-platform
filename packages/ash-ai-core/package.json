@@ -1,0 +1,22 @@
+{
+  "name": "@ash/ai-core",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reusable ASH AI orchestration: free-first routing, prompts, research, memory contracts, and document extraction.",
+  "engines": {
+    "node": ">=24.13.0 <25"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./files": "./src/files.ts"
+  },
+  "peerDependencies": {
+    "pdfjs-dist": "^4.10.38",
+    "tesseract.js": "^6.0.1"
+  },
+  "peerDependenciesMeta": {
+    "pdfjs-dist": { "optional": true },
+    "tesseract.js": { "optional": true }
+  }
+}

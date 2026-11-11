@@ -10,7 +10,8 @@ function sourceFiles(directory) {
   });
 }
 
-for (const file of sourceFiles(path.resolve("src"))) {
+const roots = [path.resolve("src"), path.resolve("packages", "ash-ai-core", "src")];
+for (const file of roots.flatMap((directory) => sourceFiles(directory))) {
   const result = spawnSync(process.execPath, ["--experimental-strip-types", "--check", file], {
     stdio: "inherit",
   });

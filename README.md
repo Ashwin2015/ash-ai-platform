@@ -17,7 +17,7 @@ That starts ASH AI on `http://127.0.0.1:3035` (API and chat in one process). Clo
 
 ## Configure
 
-Copy `.env.example` to `.env.local` (the start script can do this). Register with email and a password of at least 12 characters. The first account becomes the platform owner. Optional free-tier cloud keys:
+Copy `.env.example` to `.env.local` (the start script can do this). Register with email and a password of at least 12 characters. The first account becomes the platform owner. If `ASH_PLATFORM_INVITE_CODE` is set, a new registration must include that code. Signing in to an existing account does not. Leave the code empty on this PC for open local registration. Optional free-tier cloud keys:
 
 ```
 GEMINI_API_KEY=
@@ -65,5 +65,7 @@ npm.cmd run lan-https
 ```
 
 This is not mobile-data access and must not be port-forwarded.
+
+ASH AI Core 1.0.0 lives in `packages/ash-ai-core`. ASH Chat imports it through the existing `src/` paths. Copy a pinned snapshot with `node scripts/export-ash-ai-core.mjs <folder>`. Create another product workspace with `node scripts/ash-workspace.mjs`. See [the core integration guide](./docs/ASH-AI-CORE-INTEGRATION.md).
 
 See [architecture](./docs/architecture.md).
